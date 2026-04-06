@@ -34,7 +34,7 @@ from config import OBSERVATORY
 from astropy.coordinates import EarthLocation
 from astropy import units as u
 from astropy.time import Time
-from astropy.coordinates import SkyCoord, AltAz, get_sun
+from astropy.coordinates import SkyCoord, AltAz, get_sun, get_body
 from astropy.utils.iers import conf as iers_conf
 
 try:
@@ -67,6 +67,60 @@ EXOPLANET_PROVIDER_EXOCLOCK = "exoclock"
 EXOPLANET_PROVIDER_ETD = "etd"
 
 
+def moon_altitude_deg_at_utc(t_utc: datetime, location: EarthLocation) -> float:
+    """Altitude apparente de la Lune (°) au lieu et instant UTC donnés."""
+    if t_utc.tzinfo is None:
+        t_utc = pytz.UTC.localize(t_utc)
+    else:
+        t_utc = t_utc.astimezone(pytz.UTC)
+    t_ast = Time(t_utc)
+    moon = get_body("moon", t_ast, location=location)
+    frame = AltAz(obstime=t_ast, location=location)
+    return float(moon.transform_to(frame).alt.deg)
+
+
+def moon_phase_french_name_and_illumination(t_utc: datetime) -> Tuple[str, float, float]:
+    """
+    Phase de la Lune à l’instant donné (UTC).
+
+    Returns
+    -------
+    name_fr : str
+    illumination : float
+        Fraction illuminée 0–1 (0 = nouvelle, 1 = pleine).
+    elong_deg : float
+        Élongation géocentrique Soleil–Lune (°).
+    """
+    if t_utc.tzinfo is None:
+        t_utc = pytz.UTC.localize(t_utc)
+    else:
+        t_utc = t_utc.astimezone(pytz.UTC)
+    t_ast = Time(t_utc)
+    sun = get_sun(t_ast)
+    moon = get_body("moon", t_ast, location=None)
+    elong = float(sun.separation(moon).deg)
+    elong_rad = math.radians(elong)
+    illumination = 0.5 * (1.0 - math.cos(elong_rad))
+    e = elong % 360.0
+    if e < 22.5 or e >= 337.5:
+        name = "Nouvelle lune"
+    elif e < 67.5:
+        name = "Premier croissant"
+    elif e < 112.5:
+        name = "Premier quartier"
+    elif e < 157.5:
+        name = "Gibbeuse croissante"
+    elif e < 202.5:
+        name = "Pleine lune"
+    elif e < 247.5:
+        name = "Gibbeuse décroissante"
+    elif e < 292.5:
+        name = "Dernier quartier"
+    else:
+        name = "Dernier croissant"
+    return name, illumination, elong
+
+
 def declination_bounds_for_latitude(lat_deg: float) -> Tuple[float, float]:
     """
     Bande de déclinaison nécessaire pour qu'un objet puisse dépasser l'horizon géométrique
@@ -81,11 +135,29 @@ def declination_bounds_for_latitude(lat_deg: float) -> Tuple[float, float]:
 def build_nasa_exoplanet_tap_adql(dec_min: float, dec_max: float) -> str:
     """ADQL : planètes en transit dont la déclinaison peut être observable depuis la latitude du site."""
     return (
-        "SELECT pl_name, ra, dec, sy_vmag, pl_orbper, pl_tranmid, pl_trandur, "
+        "SELECT pl_name, ra, dec, sy_vmag, sy_gaiamag, sy_jmag, sy_kmag, pl_orbper, pl_tranmid, pl_trandur, "
         "pl_ratror, pl_rade, pl_radj, st_rad FROM pscomppars "
         "WHERE tran_flag=1 "
         f"AND dec >= {dec_min:.6f} AND dec <= {dec_max:.6f}"
     )
+
+
+def host_star_magnitude_from_nasa_row(row: dict) -> Optional[float]:
+    """
+    Magnitude de l’étoile hôte depuis une ligne TAP NASA (pscomppars).
+    Essaie sy_vmag puis bandes de repli ; plage réaliste pour affichage / filtrage.
+    """
+    for key in ("sy_vmag", "sy_gaiamag", "sy_jmag", "sy_kmag"):
+        raw = row.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            x = float(raw)
+            if math.isfinite(x) and -4.0 <= x <= 25.0:
+                return x
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 # Rayons solaires (pour recréer « transitdepthcalc » depuis pscomppars, cf. NASA Transit Service)
@@ -761,6 +833,10 @@ class NightObservationTab(ttk.Frame):
         self.selected_objects = {}
         self.last_exoplanet_provider_counts = {}
         self.etd_authenticated = False
+
+        # Callback optionnel vers l'onglet Planétarium (C2A)
+        # Renseigné par MainWindow via set_c2a_visualizer.
+        self.c2a_visualizer = None
         
         # Variables Tkinter
         self.date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
@@ -970,8 +1046,13 @@ class NightObservationTab(ttk.Frame):
             text="Réinitialiser",
             command=self.reset_observable_objects_view,
         ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            buttons_row,
+            text="🪐 Envoyer vers l'onglet Planétarium (C2A)",
+            command=self.on_visualize_in_c2a,
+        ).pack(side=tk.LEFT, padx=5)
         
-        # ===== CADRE 3 : LISTE DES OBJETS =====
+        # ===== LISTE DES OBJETS =====
         list_frame = ttk.LabelFrame(left_col, text="Objets observables", padding=5)
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0), ipadx=5)
         
@@ -1109,8 +1190,74 @@ class NightObservationTab(ttk.Frame):
         text.insert("1.0", "\n".join(lines))
         text.config(state="disabled")
 
-        btn = ttk.Button(frame, text="Fermer", command=win.destroy)
-        btn.pack(pady=5)
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill=tk.X, pady=5)
+
+        ttk.Button(btn_row, text="Fermer", command=win.destroy).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_row,
+            text="🪐 Visualiser cette cible dans C2A",
+            command=lambda: self._visualize_single_object_in_c2a(obj),
+        ).pack(side=tk.LEFT, padx=8)
+
+    # ------------------------------------------------------------------
+    # Intégration C2A
+    # ------------------------------------------------------------------
+    def set_c2a_visualizer(self, callback) -> None:
+        """
+        Enregistre une fonction pour pousser une liste d’objets vers l’onglet Planétarium.
+
+        callback(objs: List[EphemerisObject]) -> None
+        """
+        self.c2a_visualizer = callback
+
+    def _get_selected_objects(self) -> List["EphemerisObject"]:
+        """
+        Retourne la liste des objets actuellement cochés dans la liste.
+        """
+        selected_list = []
+        for name, selected in self.selected_objects.items():
+            if not selected:
+                continue
+            obj = self._find_object_by_name(name)
+            if obj is not None:
+                selected_list.append(obj)
+        return selected_list
+
+    def on_visualize_in_c2a(self) -> None:
+        """
+        Handler du bouton 'Envoyer vers l'onglet Planétarium (C2A)'.
+        """
+        if self.c2a_visualizer is None:
+            messagebox.showwarning(
+                "C2A",
+                "Le lien vers l'onglet Planétarium (C2A) n'est pas initialisé.",
+            )
+            return
+
+        objs = self._get_selected_objects()
+        if not objs:
+            messagebox.showinfo(
+                "C2A",
+                "Aucune cible n'est sélectionnée dans la liste des objets observables.\n"
+                "Cochez au moins un objet dans la colonne ☑ puis réessayez.",
+            )
+            return
+
+        self.c2a_visualizer(objs)
+
+    def _visualize_single_object_in_c2a(self, obj: "EphemerisObject") -> None:
+        """
+        Appelé depuis la fenêtre de détails pour envoyer directement cet objet
+        dans la liste de l’onglet Planétarium.
+        """
+        if self.c2a_visualizer is None:
+            messagebox.showwarning(
+                "C2A",
+                "Le lien vers l'onglet Planétarium (C2A) n'est pas initialisé.",
+            )
+            return
+        self.c2a_visualizer([obj])
     
     def toggle_date_interval(self):
         """Active/désactive le champ de date de fin pour l'intervalle."""
@@ -1341,8 +1488,7 @@ class NightObservationTab(ttk.Frame):
         """Met à jour le graphique avec les objets sélectionnés (et la courbe coordonnées manuelles si cochée)."""
         if not hasattr(self, "obs_date") or not hasattr(self, "start_time"):
             return
-        if self.filtered_objects or self._manual_coord_deg_for_plot():
-            self.plot_ephemerides(self.obs_date, self.start_time, self.end_time)
+        self.plot_ephemerides(self.obs_date, self.start_time, self.end_time)
     
     def _mpc_files_directory(self) -> Path:
         """Répertoire local des fichiers NEA.txt et AllCometEls.txt (champ ou défaut .npoap/catalogues)."""
@@ -1755,6 +1901,9 @@ class NightObservationTab(ttk.Frame):
                 "ra",
                 "dec",
                 "sy_vmag",
+                "sy_gaiamag",
+                "sy_jmag",
+                "sy_kmag",
                 "pl_orbper",
                 "pl_tranmid",
                 "pl_trandur",
@@ -1857,17 +2006,7 @@ class NightObservationTab(ttk.Frame):
             ):
                 continue
 
-            magnitude = None
-            mag_raw = row.get("sy_vmag")
-            if mag_raw is not None and str(mag_raw).strip() != "":
-                try:
-                    mag_val = float(mag_raw)
-                    if mag_val <= 15.0:
-                        magnitude = mag_val
-                    else:
-                        continue
-                except (TypeError, ValueError):
-                    pass
+            magnitude = host_star_magnitude_from_nasa_row(row)
 
             period = None
             p_raw = row.get("pl_orbper")
@@ -2027,12 +2166,19 @@ class NightObservationTab(ttk.Frame):
 
         mag = self._to_float_or_none(
             rec.get("sy_vmag")
+            or rec.get("sy_gaiamag")
+            or rec.get("sy_jmag")
             or rec.get("vmag")
             or rec.get("v_mag")
+            or rec.get("Vmag")
+            or rec.get("brightness")
+            or rec.get("stellar_magnitude")
             or self._nested_get(rec, "star", "vmag")
             or self._nested_get(rec, "star", "mag")
+            or self._nested_get(rec, "star", "sy_vmag")
+            or self._nested_get(rec, "star", "gaia_mag")
         )
-        if mag is not None and mag > 15.0:
+        if mag is not None and (not math.isfinite(mag) or mag < -4.0 or mag > 25.0):
             mag = None
 
         return {
@@ -2182,7 +2328,7 @@ class NightObservationTab(ttk.Frame):
                     continue
 
                 mag = self._to_float_or_none(row.get("Luminosité (Mag)"))
-                if mag is not None and mag > 15.0:
+                if mag is not None and (not math.isfinite(mag) or mag < -4.0 or mag > 25.0):
                     mag = None
 
                 period = self._to_float_or_none(row.get("Période"))
@@ -2276,9 +2422,15 @@ class NightObservationTab(ttk.Frame):
 
             # Fusion douce: la première source garde la priorité,
             # mais on complète les champs manquants avec les sources suivantes.
+            # Magnitude : préférer NASA (sy_vmag / catalogue TAP) si disponible.
             kept = seen_names[key]
-            if kept.magnitude is None and obj.magnitude is not None:
-                kept.magnitude = obj.magnitude
+            obj_src = (getattr(obj, "exo_source", None) or "").strip().lower()
+            kept_src = (getattr(kept, "exo_source", None) or "").strip().lower()
+            if obj.magnitude is not None:
+                if kept.magnitude is None:
+                    kept.magnitude = obj.magnitude
+                elif obj_src == EXOPLANET_PROVIDER_NASA and kept_src != EXOPLANET_PROVIDER_NASA:
+                    kept.magnitude = obj.magnitude
             if kept.period is None and obj.period is not None:
                 kept.period = obj.period
             if kept.exo_pl_tranmid_jd is None and obj.exo_pl_tranmid_jd is not None:
@@ -2291,18 +2443,41 @@ class NightObservationTab(ttk.Frame):
             ):
                 kept.exo_transitdepthcalc_pct = obj.exo_transitdepthcalc_pct
 
+        # Exiger une magnitude hôte connue (NASA et/ou ExoClock / ETD après fusion).
+        with_mag: List[EphemerisObject] = []
+        dropped_mag = 0
+        for obj in deduped:
+            if obj.magnitude is None:
+                dropped_mag += 1
+                logger.warning(
+                    "Exoplanète '%s' exclue : magnitude de l’étoile hôte introuvable "
+                    "(NASA : sy_vmag, sy_gaiamag, … ; ExoClock : sy_vmag, vmag, …).",
+                    obj.name,
+                )
+                continue
+            with_mag.append(obj)
+
+        if dropped_mag:
+            logger.info(
+                "Exoplanètes sans magnitude après fusion NASA/ExoClock/ETD : %d exclue(s)",
+                dropped_mag,
+            )
+
         logger.info(
-            "Exoplanètes agrégées : %d entrée(s) (%d après dédoublonnage) via %s",
+            "Exoplanètes agrégées : %d entrée(s) (%d après dédoublonnage, %d avec mag) via %s",
             len(all_objects),
             len(deduped),
+            len(with_mag),
             ", ".join(providers) if providers else "aucune source",
         )
         self.last_exoplanet_provider_counts = {
             **provider_counts,
             "total_before_dedup": len(all_objects),
             "total_after_dedup": len(deduped),
+            "total_with_magnitude": len(with_mag),
+            "dropped_missing_magnitude": dropped_mag,
         }
-        return deduped
+        return with_mag
 
     def load_aavso_objects(self):
         """Charge les étoiles binaires à éclipses depuis index.csv AAVSO (types EB / EA)."""
@@ -3167,11 +3342,11 @@ class NightObservationTab(ttk.Frame):
             start_time = self.start_time
             end_time = self.end_time
 
-        if not self.filtered_objects and manual_deg is None:
+        if start_time is None or end_time is None:
             self.ax.text(
                 0.5,
                 0.5,
-                "Aucun objet observable",
+                "Impossible de définir la nuit (date / fuseau).",
                 ha="center",
                 va="center",
                 transform=self.ax.transAxes,
@@ -3179,62 +3354,172 @@ class NightObservationTab(ttk.Frame):
             self.canvas.draw()
             return
 
-        # Utiliser le fuseau horaire local déjà calculé
-        local_tz = self.local_tz
-        
-        sunset_local = self.sunset_local
-        sunrise_local = self.sunrise_local
+        local_tz = getattr(self, "local_tz", None)
+        sunset_local = getattr(self, "sunset_local", None)
+        sunrise_local = getattr(self, "sunrise_local", None)
+        if local_tz is None or sunset_local is None or sunrise_local is None:
+            self.ax.text(
+                0.5,
+                0.5,
+                "Paramètres de nuit manquants — lancez un calcul d’éphémérides ou « Mettre à jour le graphique ».",
+                ha="center",
+                va="center",
+                transform=self.ax.transAxes,
+                fontsize=10,
+            )
+            self.canvas.draw()
+            return
+
         astro_dusk_local = getattr(self, "astro_dusk_local", None)
         astro_dawn_local = getattr(self, "astro_dawn_local", None)
         if astro_dusk_local is None or astro_dawn_local is None:
             astro_dusk_local = sunset_local
             astro_dawn_local = sunrise_local
 
-        # Créer une série de temps sur la fenêtre [start_time, end_time] (nuit astronomique)
-        # S'assurer que start_time et end_time sont cohérents en termes de timezone
         if start_time.tzinfo is None:
             start_time_tz = pytz.UTC.localize(start_time)
         else:
             start_time_tz = start_time.astimezone(pytz.UTC)
-        
+
         if end_time.tzinfo is None:
             end_time_tz = pytz.UTC.localize(end_time)
         else:
             end_time_tz = end_time.astimezone(pytz.UTC)
-        
+
         times_utc = []
         current = start_time_tz
         while current <= end_time_tz:
             times_utc.append(current)
             current = current + timedelta(minutes=15)
-        
-        # Convertir en heure locale
+
         times_local = [t_utc.astimezone(local_tz) for t_utc in times_utc]
-        
-        # Trouver minuit local pour centrer le graphique sur 00h
+
         obs_date_local = local_tz.localize(obs_date.replace(hour=0, minute=0, second=0, microsecond=0))
         midnight_local = obs_date_local
-        
-        # Référence minuit local pour l’axe X (nuit qui commence le soir du jour J)
+
         if sunset_local < midnight_local:
-            midnight_local = local_tz.localize((obs_date - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
-        
+            midnight_local = local_tz.localize(
+                (obs_date - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            )
+
+        def _hours_since_midnight(t_loc: datetime) -> float:
+            dh = (t_loc - midnight_local).total_seconds() / 3600.0
+            if dh > 12:
+                dh -= 24
+            return dh
+
         times_hours = []
         for t_local in times_local:
-            # Calculer le nombre d'heures depuis minuit
             delta = t_local - midnight_local
             hours_from_midnight = delta.total_seconds() / 3600.0
-            # Convertir pour centrer sur minuit : heures > 12h deviennent négatives
             if hours_from_midnight > 12:
                 hours_from_midnight -= 24
             times_hours.append(hours_from_midnight)
-        
-        # Tracer la trajectoire uniquement des objets sélectionnés dans la liste
+
+        moon_alts = [moon_altitude_deg_at_utc(t, self.location) for t in times_utc]
+
+        dusk_astro_h = _hours_since_midnight(astro_dusk_local)
+        dawn_astro_h = _hours_since_midnight(astro_dawn_local)
+        dusk_geo_h = _hours_since_midnight(sunset_local)
+        dawn_geo_h = _hours_since_midnight(sunrise_local)
+
+        self.ax.axvline(
+            x=dusk_astro_h,
+            color="darkred",
+            linestyle="--",
+            linewidth=2,
+            alpha=0.9,
+            label="Fin crépuscule astro (−18°)",
+            zorder=2,
+        )
+        self.ax.axvline(
+            x=dawn_astro_h,
+            color="darkorange",
+            linestyle="--",
+            linewidth=2,
+            alpha=0.9,
+            label="Début aube astro (−18°)",
+            zorder=2,
+        )
+        self.ax.axvline(
+            x=dusk_geo_h,
+            color="gray",
+            linestyle=":",
+            linewidth=3.0,
+            alpha=0.85,
+            label="Coucher 0°",
+            zorder=2,
+        )
+        self.ax.axvline(
+            x=dawn_geo_h,
+            color="gray",
+            linestyle=":",
+            linewidth=3.0,
+            alpha=0.85,
+            label="Lever 0°",
+            zorder=2,
+        )
+
+        if dusk_astro_h < dawn_astro_h:
+            self.ax.axvspan(dusk_astro_h, dawn_astro_h, alpha=0.15, color="darkblue", zorder=0)
+        else:
+            self.ax.axvspan(dusk_astro_h, 0, alpha=0.15, color="darkblue", zorder=0)
+            self.ax.axvspan(0, dawn_astro_h, alpha=0.15, color="darkblue", zorder=0)
+
+        self.ax.plot(
+            times_hours,
+            moon_alts,
+            color="goldenrod",
+            linestyle="-",
+            linewidth=2.6,
+            alpha=0.95,
+            label="Lune (trajectoire)",
+            zorder=6,
+        )
+
+        mid_utc = start_time_tz + (end_time_tz - start_time_tz) / 2
+        ph_name, ph_illum, ph_elong = moon_phase_french_name_and_illumination(mid_utc)
+        phase_box = (
+            f"Lune — {ph_name}\n"
+            f"Illuminée ≈ {ph_illum * 100.0:.0f} %  |  élong. ≈ {ph_elong:.0f}°"
+        )
+        self.ax.text(
+            0.02,
+            0.98,
+            phase_box,
+            transform=self.ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=9,
+            linespacing=1.2,
+            bbox=dict(
+                boxstyle="round,pad=0.4",
+                facecolor="wheat",
+                alpha=0.9,
+                edgecolor="saddlebrown",
+            ),
+            zorder=12,
+        )
+
         selected_obj_list = [
             obj
             for obj in self.filtered_objects
             if obj.name in self.selected_objects and self.selected_objects[obj.name]
         ]
+        if not selected_obj_list and manual_deg is None:
+            self.ax.text(
+                0.5,
+                0.06,
+                "Aucune cible cochée — Lune et repères de nuit affichés.",
+                ha="center",
+                va="bottom",
+                transform=self.ax.transAxes,
+                fontsize=9,
+                color="dimgray",
+                style="italic",
+                zorder=11,
+            )
+
         altitude_labels_done = set()
 
         def _exo_source_style(obj: "EphemerisObject"):
@@ -3293,61 +3578,7 @@ class NightObservationTab(ttk.Frame):
                 label="Coordonnées ICRS (saisie)",
                 zorder=5,
             )
-        
-        def _hours_since_midnight(t_loc: datetime) -> float:
-            dh = (t_loc - midnight_local).total_seconds() / 3600.0
-            if dh > 12:
-                dh -= 24
-            return dh
 
-        # Limites nuit astronomique (−18°) — bande violette / lignes principales
-        dusk_astro_h = _hours_since_midnight(astro_dusk_local)
-        dawn_astro_h = _hours_since_midnight(astro_dawn_local)
-
-        # Référence horizon géométrique (0°), plus tôt le soir / plus tard le matin
-        dusk_geo_h = _hours_since_midnight(sunset_local)
-        dawn_geo_h = _hours_since_midnight(sunrise_local)
-
-        self.ax.axvline(
-            x=dusk_astro_h,
-            color="darkred",
-            linestyle="--",
-            linewidth=2,
-            alpha=0.9,
-            label="Fin crépuscule astro (−18°)",
-        )
-        self.ax.axvline(
-            x=dawn_astro_h,
-            color="darkorange",
-            linestyle="--",
-            linewidth=2,
-            alpha=0.9,
-            label="Début aube astro (−18°)",
-        )
-        self.ax.axvline(
-            x=dusk_geo_h,
-            color="gray",
-            linestyle=":",
-            linewidth=3.0,
-            alpha=0.85,
-            label="Coucher 0°",
-        )
-        self.ax.axvline(
-            x=dawn_geo_h,
-            color="gray",
-            linestyle=":",
-            linewidth=3.0,
-            alpha=0.85,
-            label="Lever 0°",
-        )
-
-        # Zone de nuit astronomique
-        if dusk_astro_h < dawn_astro_h:
-            self.ax.axvspan(dusk_astro_h, dawn_astro_h, alpha=0.15, color="darkblue")
-        else:
-            self.ax.axvspan(dusk_astro_h, 0, alpha=0.15, color="darkblue")
-            self.ax.axvspan(0, dawn_astro_h, alpha=0.15, color="darkblue")
-        
         # Lignes de référence d'altitude
         self.ax.axhline(y=30, color='green', linestyle=':', alpha=0.5, linewidth=1)
         if any(obj.obj_type in ['asteroid', 'comet'] for obj in self.filtered_objects):
@@ -3358,11 +3589,13 @@ class NightObservationTab(ttk.Frame):
         self.ax.set_xlabel("Heure locale", fontsize=13)
         self.ax.set_ylabel("Altitude (°)", fontsize=13)
         self.ax.set_title(
-            f"Altitude des objets observables — {obs_date.strftime('%Y-%m-%d')} (nuit astronomique −18°)",
+            f"Altitude (Lune + objets) — {obs_date.strftime('%Y-%m-%d')} (nuit astronomique −18°)",
             fontsize=15,
             fontweight="bold",
         )
-        self.ax.set_ylim(15, 85)
+        y_lo = min(15.0, float(np.min(moon_alts)) - 5.0)
+        y_lo = max(-12.0, y_lo)
+        self.ax.set_ylim(y_lo, 90)
         
         # Limites X : englober nuit astro et repères 0°
         x_min = min(dusk_astro_h, dawn_astro_h, dusk_geo_h, dawn_geo_h)
