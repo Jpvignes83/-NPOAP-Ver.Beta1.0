@@ -71,13 +71,13 @@ from gui.lightcurve_fitting import LightcurveFitting
 
 class PhotometryExoplanetsTab(ttk.Frame):
     """
-    Onglet de photométrie exoplanètes.
-    Workflow en 6 étapes (référence, cibles, ouvertures, batch, analyse, rapports).
+    Onglet de photométrie exoplanètes : HOPS modifié (gauche) et analyse des données (droite).
     """
 
     def __init__(self, parent, base_dir=None):
         super().__init__(parent, padding=0)
         self.base_dir = str(base_dir) if base_dir is not None else None
+        self.data_analysis_tab = None
         
         # Instanciation du pipeline
         self.pipeline = PhotometryPipeline()
@@ -90,11 +90,22 @@ class PhotometryExoplanetsTab(ttk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
-        right_frame = ttk.Frame(self, padding=10)
-        right_frame.pack(fill=tk.BOTH, expand=True)
+        main_paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        main_paned.pack(fill=tk.BOTH, expand=True)
 
-        hops_frame = ttk.LabelFrame(right_frame, text="HOPS", padding=8)
-        hops_frame.pack(fill="both", expand=True, pady=(0, 2))
+        left_frame = ttk.Frame(main_paned, padding=0)
+        right_frame = ttk.Frame(main_paned, padding=0)
+        main_paned.add(left_frame, weight=1)
+        main_paned.add(right_frame, weight=1)
+        try:
+            main_paned.pane(left_frame, minsize=260)
+            main_paned.pane(right_frame, minsize=380)
+        except tk.TclError:
+            pass
+        self.after_idle(lambda: self._set_photometry_paned_sash(main_paned))
+
+        hops_frame = ttk.LabelFrame(left_frame, text="HOPS modifié", padding=8)
+        hops_frame.pack(fill="both", expand=True, pady=4, padx=(4, 2))
 
         hops_btn_row = ttk.Frame(hops_frame)
         hops_btn_row.pack(fill="x")
@@ -136,6 +147,38 @@ class PhotometryExoplanetsTab(ttk.Frame):
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(hops_frame, variable=self.progress_var, maximum=100)
         self.lbl_progress = ttk.Label(hops_frame, text="En attente...", font=("Arial", 8))
+
+        # Panneau droit : même contenu que l’ancien onglet « Analyse des données »
+        analysis_host = ttk.Frame(right_frame)
+        analysis_host.pack(fill=tk.BOTH, expand=True, padx=(2, 4), pady=4)
+        try:
+            from gui.data_analysis_tab import DataAnalysisTab
+
+            self.data_analysis_tab = DataAnalysisTab(analysis_host)
+        except Exception as e:
+            logging.error(
+                "Intégration Analyse des données dans Photométrie Exoplanètes impossible: %s",
+                e,
+                exc_info=True,
+            )
+            self.data_analysis_tab = None
+            ttk.Label(
+                analysis_host,
+                text=f"Analyse des données indisponible :\n{e}",
+                foreground="red",
+                wraplength=420,
+                justify="left",
+            ).pack(anchor="w", padx=8, pady=8)
+
+    def _set_photometry_paned_sash(self, paned: ttk.Panedwindow) -> None:
+        """Place la séparation ~45 % / 55 % (HOPS / analyse) après géométrie connue."""
+        try:
+            paned.update_idletasks()
+            w = int(paned.winfo_width())
+            if w > 80:
+                paned.sashpos(0, max(200, int(w * 0.45)))
+        except tk.TclError:
+            pass
 
     def _build_hops_scrollable_embed(self) -> None:
         scroll_wrap = ttk.Frame(self.hops_embed_host)

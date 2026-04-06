@@ -34,6 +34,7 @@ except ImportError:
 from gui.periodogram_viewer import PeriodogramViewer
 from gui.ttv_viewer import TTVViewer
 from gui.lc_markers_viewer import LCMarkersViewer
+from gui.catalogues_tab import CataloguesTab
 
 logger = logging.getLogger(__name__)
 
@@ -97,24 +98,43 @@ class ToolTip:
 class DataAnalysisTab:
     def __init__(self, parent_notebook):
         """
-        Intègre l'onglet d'analyse dans le notebook principal de l'application.
+        Conteneur d'analyse (période, TTV, etc.) : parent = notebook principal
+        ou tout frame (ex. panneau droit Photométrie Exoplanètes).
         """
         self.main_frame = ttk.Frame(parent_notebook)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Création des sous-onglets A, B, C
+        # Sous-onglets A–E (MAST / catalogues exoplanètes puis outils d'analyse)
         self.sub_notebook = ttk.Notebook(self.main_frame)
         self.sub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+        self.tab_catalogues_mast = ttk.Frame(self.sub_notebook)
         self.tab_period = ttk.Frame(self.sub_notebook)
         self.tab_ttv = ttk.Frame(self.sub_notebook)
         self.tab_multi = ttk.Frame(self.sub_notebook)
         self.tab_nbody = ttk.Frame(self.sub_notebook)
 
-        self.sub_notebook.add(self.tab_period, text="A. Détermination Période")
-        self.sub_notebook.add(self.tab_ttv, text="B. Recherche & Analyse TTV")
-        self.sub_notebook.add(self.tab_multi, text="C. Analyse Système Multiple")
-        self.sub_notebook.add(self.tab_nbody, text="D. Simulation N-body")
+        self.sub_notebook.add(self.tab_catalogues_mast, text="A. Catalogues MAST")
+        self.sub_notebook.add(self.tab_period, text="B. Détermination Période")
+        self.sub_notebook.add(self.tab_ttv, text="C. Recherche & Analyse TTV")
+        self.sub_notebook.add(self.tab_multi, text="D. Analyse Système Multiple")
+        self.sub_notebook.add(self.tab_nbody, text="E. Simulation N-body")
+
+        # Même interface que l'onglet Catalogues → Exoplanètes (MAST, Édition Fits, LcTools)
+        try:
+            self.catalogues_mast_panel = CataloguesTab(
+                self.tab_catalogues_mast, exoplanets_only=True
+            )
+        except Exception as e:
+            logger.exception("Échec intégration Catalogues MAST dans Analyse des données")
+            self.catalogues_mast_panel = None
+            ttk.Label(
+                self.tab_catalogues_mast,
+                text=f"Impossible de charger Catalogues MAST : {e}",
+                foreground="red",
+                wraplength=560,
+                justify="left",
+            ).pack(padx=10, pady=10, anchor="w")
 
         # Données en mémoire
         self.lc_time = None
