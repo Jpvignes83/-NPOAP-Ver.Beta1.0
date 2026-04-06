@@ -16,7 +16,6 @@ from gui.data_reduction_tab import CCDProcGUI
 from gui.photometry_exoplanets_tab import PhotometryExoplanetsTab
 from gui.asteroid_photometry_tab import AsteroidPhotometryTab
 from gui.transient_photometry_tab import TransientPhotometryTab
-from gui.data_analysis_tab import DataAnalysisTab
 from gui.binary_stars_tab import BinaryStarsTab
 try:
     from gui.easy_lucky_imaging_tab import EasyLuckyImagingTab
@@ -65,9 +64,12 @@ class MainWindow:
         
         self.data_reduction_tab = CCDProcGUI(self.notebook)
         self.photometry_exoplanets_tab = PhotometryExoplanetsTab(self.notebook, base_dir=None)
+        # Analyse des données : intégrée au panneau droit de Photométrie Exoplanètes
+        self.data_analysis_tab = getattr(
+            self.photometry_exoplanets_tab, "data_analysis_tab", None
+        )
         self.asteroid_photometry_tab = AsteroidPhotometryTab(self.notebook)
         self.transient_photometry_tab = TransientPhotometryTab(self.notebook)
-        self.data_analysis_tab = DataAnalysisTab(self.notebook)
         self.binary_stars_tab = BinaryStarsTab(self.notebook)
         self.planetarium_tab = PlanetariumTab(self.notebook)
         if EASY_LUCKY_AVAILABLE:
@@ -100,7 +102,6 @@ class MainWindow:
         self.notebook.add(self.photometry_exoplanets_tab, text="🔭 Photométrie Exoplanètes")
         self.notebook.add(self.asteroid_photometry_tab.frame, text="🛰️ Photométrie Astéroïdes")
         self.notebook.add(self.transient_photometry_tab, text="💥 Photométrie Transitoires")
-        self.notebook.add(self.data_analysis_tab.main_frame, text="📈 Analyse des Données")
         self.notebook.add(self.binary_stars_tab, text="⭐ Étoiles Binaires")
         if self.easy_lucky_imaging_tab is not None:
             self.notebook.add(self.easy_lucky_imaging_tab, text="✨ Easy Lucky Imaging")
