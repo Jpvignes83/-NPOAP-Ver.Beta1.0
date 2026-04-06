@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
+from gui.transit_fit_dialog import TransitFitDialog
+
 logger = logging.getLogger(__name__)
 
 PERIOD_COLORS = [
@@ -143,6 +145,8 @@ class LCMarkersViewer(tk.Toplevel):
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(toolbar, text="💾 Exporter mid-time.csv par période", command=self._export).pack(side=tk.LEFT, padx=2)
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        ttk.Button(toolbar, text="📐 Affiner Tc (fit trapèze)", command=self._open_transit_fit_dialog).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Checkbutton(
             toolbar,
             text="Abscisses : jours depuis le début",
@@ -168,6 +172,13 @@ class LCMarkersViewer(tk.Toplevel):
         self.slider_list_width.set(32)
         self.slider_list_width.pack(fill=tk.X, pady=2)
         ttk.Label(left, text="Clic sur la courbe : fixe ou modifie le mid-time (période sélectionnée).", font=("", 8), foreground="gray", wraplength=240).pack(anchor=tk.W, pady=4)
+        ttk.Label(
+            left,
+            text="Fit trapèze : validez d’abord des mid-times, puis affinez-les un par un (période sélectionnée).",
+            font=("", 8),
+            foreground="gray",
+            wraplength=240,
+        ).pack(anchor=tk.W, pady=(2, 0))
 
         for i, d in enumerate(self.periods_data):
             n = len(d.get('mid_times') or {})
@@ -321,6 +332,35 @@ class LCMarkersViewer(tk.Toplevel):
         self.listbox.insert(idx, f"  P={d['period']:.5f} j  prof.={depth:.4f}  ({n} TTV)")
         self.listbox.selection_set(idx)
         self._redraw()
+
+    def _open_transit_fit_dialog(self):
+        """Ajustement local trapézoïdal pour affiner Tc (époque par époque)."""
+        idx = self.selected_index.get()
+        if idx < 0 or idx >= len(self.periods_data):
+            messagebox.showinfo("Fit transit", "Sélectionnez une période dans la liste.")
+            return
+        d = self.periods_data[idx]
+        mid_times = d.get("mid_times") or {}
+        if not mid_times:
+            messagebox.showinfo(
+                "Fit transit",
+                "Aucun mid-time pour cette période. Utilisez « Valider tous les transits » ou cliquez sur la courbe.",
+            )
+            return
+
+        def on_apply(epoch, t0, err):
+            d.setdefault("mid_times", {})[int(epoch)] = (float(t0), float(err), "fit")
+            self._refresh_listbox()
+            self._redraw()
+
+        TransitFitDialog(
+            self,
+            self.time_full,
+            self.flux_full,
+            None,
+            d,
+            on_apply,
+        )
 
     def _export(self):
         out_dir = filedialog.askdirectory(title="Dossier pour les fichiers mid-time.csv")
