@@ -1,0 +1,13 @@
+NPOAP - Composants optionnels (apres installation.bat)
+
+Executer les scripts depuis le dossier NPOAP (copie d'installation ou deploiement).
+
+  install_msvc_build_tools.bat     Visual C++ Build Tools / MSVC
+  install_cmake.bat                CMake (build C++/KBMOD)
+  install_wsl.bat                  Sous-systeme Windows pour Linux
+  install_ubuntu_wsl.bat         Distribution Ubuntu dans WSL
+  install_astrometry_wsl.bat     Paquet astrometry.net dans WSL
+  install_kbmod_wsl.bat          Aide + doc KBMOD sous WSL/Linux
+  INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat   Prospector dans astroenv Windows (lance le .ps1)
+  INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1   Meme chose + options (-InstallFSPS, -CondaEnv, ...)
+  Installation_fsps/prospector.bat           Prospector + FSPS via WSL (avec install_prospector_wsl.sh)
