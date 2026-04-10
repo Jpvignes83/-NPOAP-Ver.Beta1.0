@@ -5,8 +5,11 @@ Utilise l'AAVSO Target Tool pour les étoiles binaires à éclipses (index.csv).
 Utilise le NASA Exoplanet Archive (TAP / pscomppars, tran_flag=1) pour les exoplanètes en transit,
 avec requête restreinte à la bande de déclinaison observable depuis la latitude (config.OBSERVATORY)
 et filtrage : nuit astronomique (Soleil ≤ −18°), transit avec pl_tranmid / pl_trandur / pl_orbper,
-altitude > 25° à ingress−1 h et egress+1 h (dates couvertes par la section Paramètres).
+altitude > 25° à ingress−1 h et egress+1 h (dates couvertes par la section Paramètres),
+séparation ≥ 50° par rapport à la Lune à ces instants (exoplanètes ; astéroïdes, comètes et transitoires à la culmination sur la nuit).
 Utilise le système MPCORB du Minor Planet Center pour les astéroïdes et comètes.
+Exoplanètes, astéroïdes, comètes et transitoires : exclusion si la cible est à moins de 50°
+de la Lune (instant de culmination pour MPC ; ingress−1 h, milieu de transit, egress+1 h pour les transits).
 """
 
 import tkinter as tk
@@ -77,6 +80,15 @@ def moon_altitude_deg_at_utc(t_utc: datetime, location: EarthLocation) -> float:
     moon = get_body("moon", t_ast, location=location)
     frame = AltAz(obstime=t_ast, location=location)
     return float(moon.transform_to(frame).alt.deg)
+
+
+def moon_object_separation_deg_icrs(
+    ra_deg: float, dec_deg: float, obstime: Time, location: EarthLocation
+) -> float:
+    """Séparation angulaire apparente (°) entre la cible ICRS et la Lune au lieu et instant donnés."""
+    coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs")
+    moon = get_body("moon", obstime, location=location)
+    return float(coord.separation(moon).deg)
 
 
 def moon_phase_french_name_and_illumination(t_utc: datetime) -> Tuple[str, float, float]:
@@ -243,6 +255,8 @@ def exo_transit_k_for_night_utc_interval(
 # Filtrage exoplanètes : fenêtre [ingress−1 h, egress+1 h] dans la nuit astronomique, alt > 25°.
 EXO_TRANSIT_MIN_ALT_DEG = 25.0
 EXO_ASTRO_SUN_ALT_DEG = -18.0
+# Exoplanètes, astéroïdes, comètes, transitoires : écart minimal à la Lune (critère de recherche nuit).
+NIGHT_MOON_MIN_SEPARATION_DEG = 50.0
 
 
 def comet_mpes_designation_from_mpc_line(line: str) -> Optional[str]:
@@ -1398,6 +1412,9 @@ class NightObservationTab(ttk.Frame):
                 except Exception as e:
                     logger.error("Erreur calcul éphémérides Astro-COLIBRI pour %s : %s", obj.name, e, exc_info=True)
 
+                if not self._object_clear_of_moon(obj):
+                    continue
+
                 self.objects.append(obj)
                 self.filtered_objects.append(obj)
                 self.selected_objects.setdefault(obj.name, False)
@@ -1716,8 +1733,81 @@ class NightObservationTab(ttk.Frame):
                 alt1 = coord.transform_to(AltAz(obstime=ta1, location=self.location)).alt.deg
                 alt2 = coord.transform_to(AltAz(obstime=ta2, location=self.location)).alt.deg
                 if alt1 > EXO_TRANSIT_MIN_ALT_DEG and alt2 > EXO_TRANSIT_MIN_ALT_DEG:
+                    if self.location is not None:
+                        t_mid_ast = Time(t_mid, format="jd")
+                        seps = (
+                            moon_object_separation_deg_icrs(ra_deg, dec_deg, ta1, self.location),
+                            moon_object_separation_deg_icrs(ra_deg, dec_deg, t_mid_ast, self.location),
+                            moon_object_separation_deg_icrs(ra_deg, dec_deg, ta2, self.location),
+                        )
+                        if min(seps) < NIGHT_MOON_MIN_SEPARATION_DEG:
+                            continue
                     return True
         return False
+
+    def _object_clear_of_moon(self, obj: EphemerisObject) -> bool:
+        """
+        True si la cible respecte l'écart minimal à la Lune (50°) pour les types
+        exoplanète, astéroïde, comète et transitoire. Les binaires à éclipses ne sont pas filtrées ici.
+        """
+        if obj.obj_type not in ("exoplanet", "asteroid", "comet", "transient"):
+            return True
+        if self.location is None:
+            return True
+        min_sep = NIGHT_MOON_MIN_SEPARATION_DEG
+        if obj.obj_type == "exoplanet":
+            t0 = obj.exo_pl_tranmid_jd
+            p = obj.period
+            if (
+                t0 is not None
+                and p is not None
+                and p > 0
+                and getattr(self, "start_time", None) is not None
+                and getattr(self, "end_time", None) is not None
+            ):
+                st = self.start_time
+                et = self.end_time
+                if st.tzinfo is None:
+                    st = pytz.UTC.localize(st)
+                else:
+                    st = st.astimezone(pytz.UTC)
+                if et.tzinfo is None:
+                    et = pytz.UTC.localize(et)
+                else:
+                    et = et.astimezone(pytz.UTC)
+                jd_start = float(Time(st).jd)
+                jd_end = float(Time(et).jd)
+                k_min = math.ceil((jd_start - t0) / p)
+                k_max = math.floor((jd_end - t0) / p)
+                if k_min <= k_max:
+                    t_mid_jd = t0 + k_min * p
+                    times_ast = [Time(t_mid_jd, format="jd")]
+                    tdur_h = obj.exo_pl_trandur_h
+                    if tdur_h is not None and tdur_h > 0:
+                        half_d = (tdur_h / 2.0) / 24.0
+                        margin_d = 1.0 / 24.0
+                        times_ast = [
+                            Time(t_mid_jd - half_d - margin_d, format="jd"),
+                            Time(t_mid_jd, format="jd"),
+                            Time(t_mid_jd + half_d + margin_d, format="jd"),
+                        ]
+                    for t_ast in times_ast:
+                        if (
+                            moon_object_separation_deg_icrs(obj.ra, obj.dec, t_ast, self.location)
+                            < min_sep
+                        ):
+                            return False
+                    return True
+        t = obj.alt_max_time
+        if t is None:
+            return True
+        if t.tzinfo is None:
+            t = pytz.UTC.localize(t)
+        else:
+            t = t.astimezone(pytz.UTC)
+        return (
+            moon_object_separation_deg_icrs(obj.ra, obj.dec, Time(t), self.location) >= min_sep
+        )
 
     def fetch_nasa_exoplanet_tap_rows(self, dec_min: float, dec_max: float) -> List[dict]:
         """Interroge le TAP NASA avec filtre déclinaison (site observatoire)."""
@@ -3098,6 +3188,9 @@ class NightObservationTab(ttk.Frame):
                     if transit_time < self.start_time or transit_time > self.end_time:
                         continue
                 
+                if not self._object_clear_of_moon(obj):
+                    continue
+
                 filtered_objects.append(obj)
             
             self.filtered_objects = filtered_objects
