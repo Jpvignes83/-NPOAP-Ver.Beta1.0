@@ -187,11 +187,227 @@ class EasyLuckyImagingTab(ttk.Frame):
         notebook.add(measure_frame, text="Mesure de séparation")
         self.create_measure_tab(measure_frame)
     
+    # === Helpers spécifiques au cadre "Recherche de Binaires (Laurent)" dans Lucky Imaging ===
+    def _browse_gaia_file_for_laurent(self):
+        """Choix du fichier Gaia DR3 (CSV/CSV.GZ) pour la méthode de Laurent."""
+        path = filedialog.askopenfilename(
+            initialdir=self.base_dir,
+            filetypes=[("CSV ou GZ", "*.csv *.csv.gz *.gz"), ("Tous les fichiers", "*.*")]
+        )
+        if path:
+            self.gaia_file_var.set(path)
+    
+    def _browse_binaries_output_dir_for_laurent(self):
+        """Choix du répertoire de sortie pour les couples binaires (méthode Laurent)."""
+        directory = filedialog.askdirectory(initialdir=self.base_dir)
+        if directory:
+            self.binaries_output_dir_var.set(directory)
+    
+    def _browse_nina_csv_for_laurent(self):
+        """Choix du fichier CSV à convertir en JSON NINA (méthode Laurent)."""
+        path = filedialog.askopenfilename(
+            initialdir=self.base_dir,
+            filetypes=[("CSV", "*.csv"), ("Tous les fichiers", "*.*")]
+        )
+        if path:
+            self.nina_csv_file_var.set(path)
+    
+    def _browse_nina_output_dir_for_laurent(self):
+        """Choix du répertoire de sortie pour les fichiers JSON NINA."""
+        directory = filedialog.askdirectory(initialdir=self.base_dir)
+        if directory:
+            self.nina_output_dir_var.set(directory)
+    
+    def _start_nina_conversion_from_lucky(self):
+        """Lance la conversion CSV → JSON NINA directement depuis l'onglet Lucky Imaging."""
+        import threading
+        threading.Thread(target=self._run_nina_conversion_from_lucky, daemon=True).start()
+    
+    def _run_nina_conversion_from_lucky(self):
+        """Implémentation locale de la conversion CSV → JSON NINA (inspirée de CataloguesTab)."""
+        try:
+            import subprocess
+            import sys
+            from pathlib import Path
+        except Exception as e:
+            logger.error(f"[LuckyImaging] Erreur import conversion NINA: {e}", exc_info=True)
+            messagebox.showerror("Erreur", f"Erreur d'initialisation de la conversion NINA : {e}")
+            return
+        
+        try:
+            csv_file = self.nina_csv_file_var.get().strip()
+            if not csv_file:
+                messagebox.showerror("Erreur", "Veuillez sélectionner un fichier CSV à convertir.")
+                return
+            
+            csv_path = Path(csv_file)
+            if not csv_path.exists():
+                messagebox.showerror("Erreur", f"Fichier non trouvé : {csv_file}")
+                return
+            
+            output_dir = self.nina_output_dir_var.get().strip()
+            if not output_dir:
+                output_dir = str(self.base_dir / "nina_json")
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            script_path = Path(__file__).parent.parent / "utils" / "convert_binaries_to_nina.py"
+            if not script_path.exists():
+                messagebox.showerror("Erreur", f"Script de conversion non trouvé : {script_path}")
+                return
+            
+            python_exe = sys.executable
+            cmd = [
+                python_exe,
+                str(script_path),
+                str(csv_path),
+                str(output_dir)
+            ]
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+            
+            output_lines = []
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    output_lines.append(line)
+                    logger.info(f"[NINA] {line}")
+            
+            return_code = process.wait()
+            
+            if return_code == 0:
+                json_files = list(output_dir.glob("*.json"))
+                count = len(json_files)
+                messagebox.showinfo(
+                    "Succès",
+                    f"Conversion terminée avec succès !\n\n"
+                    f"{count} fichiers JSON créés\n"
+                    f"\nFichiers dans :\n{output_dir}"
+                )
+            else:
+                error_msg = f"Erreur lors de la conversion (code {return_code})"
+                if output_lines:
+                    logger.error("[NINA] " + "\n".join(output_lines[-10:]))
+                messagebox.showerror("Erreur", error_msg)
+        
+        except Exception as e:
+            logger.error(f"[LuckyImaging] Erreur lors de la conversion NINA : {e}", exc_info=True)
+            messagebox.showerror("Erreur", f"Erreur lors de la conversion NINA : {e}")
+    
+    def _start_laurent_analysis_from_lucky(self):
+        """Lance l'analyse de séparation linéaire directement depuis l'onglet Lucky Imaging."""
+        import threading
+        threading.Thread(target=self._run_laurent_analysis_from_lucky, daemon=True).start()
+    
+    def _run_laurent_analysis_from_lucky(self):
+        """Implémentation locale de la méthode de Laurent (sans passer par l'onglet Catalogues)."""
+        try:
+            from core.linear_separation_calculator import LinearSeparationCalculator
+            import pandas as pd
+            from pathlib import Path
+        except Exception as e:
+            logger.error(f"[LuckyImaging] Impossible d'importer LinearSeparationCalculator : {e}", exc_info=True)
+            messagebox.showerror(
+                "Erreur",
+                "Module core.linear_separation_calculator introuvable.\n"
+                "L'analyse de séparation linéaire (méthode Laurent) n'est pas disponible."
+            )
+            return
+        
+        gaia_file = self.gaia_file_var.get().strip()
+        if not gaia_file:
+            messagebox.showerror("Erreur", "Veuillez sélectionner un fichier CSV Gaia DR3.")
+            return
+        
+        gaia_path = Path(gaia_file)
+        if not gaia_path.exists():
+            messagebox.showerror("Erreur", f"Fichier non trouvé : {gaia_file}")
+            return
+        
+        # Paramètres
+        try:
+            threshold_pc = float(self.linear_sep_threshold_var.get())
+        except Exception:
+            threshold_pc = 10.0
+        
+        try:
+            max_angular_sep = float(self.max_angular_sep_var.get())
+        except Exception:
+            max_angular_sep = 60.0
+        
+        # Répertoire de sortie
+        output_dir = self.binaries_output_dir_var.get().strip()
+        if not output_dir:
+            output_dir = str(self.base_dir / "binaries_laurent")
+        output_dir_path = Path(output_dir)
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            calculator = LinearSeparationCalculator()
+            all_pairs, physical_pairs = calculator.analyze_gaia_csv_file(
+                gaia_path,
+                max_angular_separation_arcsec=max_angular_sep,
+                threshold_pc=threshold_pc,
+            )
+        except Exception as e:
+            logger.error(f"[LuckyImaging] Erreur analyse Laurent : {e}", exc_info=True)
+            messagebox.showerror("Erreur", f"Erreur lors de l'analyse du fichier Gaia : {e}")
+            return
+        
+        if not all_pairs:
+            messagebox.showwarning(
+                "Attention",
+                "Aucun couple n'a été trouvé dans le fichier.\n"
+                "Essayez d'augmenter la séparation angulaire max ou vérifiez le contenu du CSV."
+            )
+            return
+        
+        # Sauvegarde des résultats (similaire à CataloguesTab)
+        results_df = pd.DataFrame(all_pairs)
+        physical_df = pd.DataFrame(physical_pairs) if physical_pairs else pd.DataFrame()
+        
+        all_path = output_dir_path / "laurent_all_pairs.csv"
+        phys_path = output_dir_path / "laurent_physical_pairs.csv"
+        try:
+            results_df.to_csv(all_path, index=False)
+            if not physical_df.empty:
+                physical_df.to_csv(phys_path, index=False)
+        except Exception as e:
+            logger.error(f"[LuckyImaging] Erreur sauvegarde résultats Laurent : {e}", exc_info=True)
+            messagebox.showerror("Erreur", f"Erreur lors de la sauvegarde des résultats : {e}")
+            return
+        
+        message = (
+            f"Analyse terminée avec succès.\n\n"
+            f"{len(all_pairs)} couples trouvés.\n"
+            f"{len(physical_pairs)} couples physiques (SL < {threshold_pc} pc).\n\n"
+            f"Résultats enregistrés dans :\n{output_dir_path}"
+        )
+        messagebox.showinfo("Succès", message)
+    
     def create_lucky_imaging_tab(self, parent):
         """Crée l'onglet Lucky Imaging (BestOf + ELI fusionnés)"""
         
+        # Colonne principale gauche pour tous les sous-cadres Lucky Imaging
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Deux colonnes de même poids pour équilibrer la largeur des cadres
+        left_col = ttk.Frame(main_frame)
+        right_col = ttk.LabelFrame(main_frame, text="Recherche de Binaires (Laurent 2022)", padding=8)
+        
+        left_col.pack(side="left", fill="both", expand=True)
+        right_col.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
+        
         # Chargement d'images
-        load_frame = ttk.LabelFrame(parent, text="1. Chargement des images", padding=10)
+        load_frame = ttk.LabelFrame(left_col, text="1. Chargement des images", padding=10)
         load_frame.pack(fill="x", pady=5)
         
         ttk.Label(load_frame, text="Dossier d'images:").pack(anchor="w", pady=2)
@@ -203,7 +419,7 @@ class EasyLuckyImagingTab(ttk.Frame):
         ttk.Button(dir_frame, text="📁 Parcourir", command=lambda: self.browse_folder(self.lucky_dir_var)).pack(side="left", padx=(5, 0))
         
         # Section 1: Analyse et tri (BestOf)
-        analysis_frame = ttk.LabelFrame(parent, text="2. Analyse et tri des images (BestOf)", padding=10)
+        analysis_frame = ttk.LabelFrame(left_col, text="2. Analyse et tri des images (BestOf)", padding=10)
         analysis_frame.pack(fill="x", pady=5)
         
         ttk.Label(analysis_frame, text="Pourcentage d'images à analyser/conserver:").pack(anchor="w", pady=2)
@@ -235,7 +451,7 @@ class EasyLuckyImagingTab(ttk.Frame):
         ).pack(pady=5)
         
         # Section 3: Résultats de l'analyse et liste de travail
-        result_frame = ttk.LabelFrame(parent, text="3. Résultats de l'analyse et liste de travail", padding=10)
+        result_frame = ttk.LabelFrame(left_col, text="3. Résultats de l'analyse et liste de travail", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
         # Zone de texte avec scrollbar pour les résultats
@@ -245,7 +461,7 @@ class EasyLuckyImagingTab(ttk.Frame):
         scrollbar = ttk.Scrollbar(text_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.lucky_result_text = tk.Text(text_frame, height=10, yscrollcommand=scrollbar.set)
+        self.lucky_result_text = tk.Text(text_frame, height=10, yscrollcommand=scrollbar.set, width=40)
         self.lucky_result_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.lucky_result_text.yview)
         
@@ -285,8 +501,85 @@ class EasyLuckyImagingTab(ttk.Frame):
             command=self.view_work_list
         ).pack(side="left", padx=2)
         
+        self.gaia_file_var = tk.StringVar()
+        self.max_angular_sep_var = tk.StringVar(value="60.0")
+        self.linear_sep_threshold_var = tk.StringVar(value="10.0")
+        self.binaries_output_dir_var = tk.StringVar()
+        
+        row1 = ttk.Frame(right_col)
+        row1.pack(fill="x", pady=2)
+        ttk.Label(row1, text="Gaia DR3 (CSV/CSV.GZ):").pack(anchor="w")
+        row1b = ttk.Frame(right_col)
+        row1b.pack(fill="x", pady=1)
+        ttk.Entry(row1b, textvariable=self.gaia_file_var, width=28).pack(side="left", fill="x", expand=True)
+        ttk.Button(row1b, text="📁", command=self._browse_gaia_file_for_laurent, width=3).pack(side="left", padx=2)
+        
+        row2 = ttk.Frame(right_col)
+        row2.pack(fill="x", pady=2)
+        ttk.Label(row2, text="Sep. angulaire max (\"):", width=20).pack(side="left")
+        ttk.Entry(row2, textvariable=self.max_angular_sep_var, width=8).pack(side="left", padx=2)
+        
+        row3 = ttk.Frame(right_col)
+        row3.pack(fill="x", pady=2)
+        ttk.Label(row3, text="Seuil SL (pc):", width=20).pack(side="left")
+        ttk.Entry(row3, textvariable=self.linear_sep_threshold_var, width=8).pack(side="left", padx=2)
+        
+        # Répertoire de sortie pour la méthode Laurent
+        row4 = ttk.Frame(right_col)
+        row4.pack(fill="x", pady=4)
+        ttk.Label(row4, text="Répertoire de sortie:", width=20).pack(side="left")
+        out_entry = ttk.Entry(row4, textvariable=self.binaries_output_dir_var, width=20)
+        out_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            row4,
+            text="📁",
+            width=3,
+            command=self._browse_binaries_output_dir_for_laurent
+        ).pack(side="left", padx=2)
+        
+        ttk.Button(
+            right_col,
+            text="🔍 Analyser couples (séparation linéaire)",
+            command=self._start_laurent_analysis_from_lucky
+        ).pack(pady=(6, 4), fill="x")
+        
+        # Export vers NINA (section compacte sous la méthode Laurent)
+        nina_frame = ttk.LabelFrame(right_col, text="Export vers NINA", padding=6)
+        nina_frame.pack(fill="x", pady=(6, 0))
+        
+        self.nina_csv_file_var = tk.StringVar()
+        self.nina_output_dir_var = tk.StringVar()
+        
+        ttk.Label(nina_frame, text="Fichier CSV à convertir:").pack(anchor="w", pady=(0, 2))
+        nina_csv_row = ttk.Frame(nina_frame)
+        nina_csv_row.pack(fill="x", pady=1)
+        ttk.Entry(nina_csv_row, textvariable=self.nina_csv_file_var, width=24).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            nina_csv_row,
+            text="📁",
+            width=3,
+            command=self._browse_nina_csv_for_laurent
+        ).pack(side="left", padx=2)
+        
+        ttk.Label(nina_frame, text="Répertoire de sortie JSON:").pack(anchor="w", pady=(4, 2))
+        nina_out_row = ttk.Frame(nina_frame)
+        nina_out_row.pack(fill="x", pady=1)
+        ttk.Entry(nina_out_row, textvariable=self.nina_output_dir_var, width=24).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            nina_out_row,
+            text="📁",
+            width=3,
+            command=self._browse_nina_output_dir_for_laurent
+        ).pack(side="left", padx=2)
+        
+        ttk.Button(
+            nina_frame,
+            text="📤 Convertir en JSON NINA",
+            command=self._start_nina_conversion_from_lucky
+        ).pack(pady=(6, 0), fill="x")
+        
         # Section 4: Stacking (ELI)
-        stacking_frame = ttk.LabelFrame(parent, text="4. Stacking (ELI - Easy Lucky Imaging)", padding=10)
+        stacking_frame = ttk.LabelFrame(left_col, text="4. Stacking (ELI - Easy Lucky Imaging)", padding=10)
         stacking_frame.pack(fill="x", pady=5)
         
         # Bouton pour voir l'image de référence

@@ -1071,8 +1071,9 @@ class NightObservationTab(ttk.Frame):
         self.results_tree.heading("Sélection", text="☑")
         self.results_tree.column("Sélection", width=50, anchor='center')
         
-        self.results_tree.heading("Nom", text="Nom")
-        self.results_tree.column("Nom", width=120, anchor='w')
+        # Astéroïdes/comètes : désignation MPC (souvent « packed », ex. 00433 ou K07Tf8A), pas le nom IAU.
+        self.results_tree.heading("Nom", text="Désignation / nom")
+        self.results_tree.column("Nom", width=150, anchor='w')
         
         self.results_tree.heading("Type", text="Type")
         self.results_tree.column("Type", width=80, anchor='center')
@@ -1176,13 +1177,23 @@ class NightObservationTab(ttk.Frame):
 
         mag_str = f"{obj.magnitude:.2f}" if obj.magnitude is not None else "N/A"
 
+        id_label = (
+            "Désignation MPC"
+            if getattr(obj, "obj_type", "") in ("asteroid", "comet")
+            else "Nom"
+        )
+        lw = 16
         lines = [
-            f"Nom          : {obj.name}",
-            f"Type         : {obj.obj_type}",
-            f"RA (hh:mm:ss): {obj.ra_sexagesimal()}",
-            f"Dec (dd:mm:ss): {obj.dec_sexagesimal()}",
-            f"Mag visuelle : {mag_str}",
-            f"Alt. max     : {obj.alt_max:.1f}°" if hasattr(obj, 'alt_max') else "Alt. max     : N/A",
+            f"{id_label:<{lw}}: {obj.name}",
+            f"{'Type':<{lw}}: {obj.obj_type}",
+            f"{'RA (hh:mm:ss)':<{lw}}: {obj.ra_sexagesimal()}",
+            f"{'Dec (dd:mm:ss)':<{lw}}: {obj.dec_sexagesimal()}",
+            f"{'Mag visuelle':<{lw}}: {mag_str}",
+            (
+                f"{'Alt. max':<{lw}}: {obj.alt_max:.1f}°"
+                if hasattr(obj, "alt_max")
+                else f"{'Alt. max':<{lw}}: N/A"
+            ),
         ]
 
         text = tk.Text(frame, height=8, wrap=tk.WORD, font=("Consolas", 10))
@@ -2643,6 +2654,8 @@ class NightObservationTab(ttk.Frame):
                             nea_len_lt_202 += 1
                             continue
 
+                        # Colonnes MPCORB 1–7 : désignation permanente ou provisoire au format « packed »
+                        # (voir https://www.minorplanetcenter.net/iau/info/PackedDes.html ), pas le nom propre.
                         designation = line[0:7].strip()
                         H = line[8:13].strip()  # Magnitude absolue
 

@@ -2,7 +2,7 @@
 """
 Onglet unifié pour extraire des données de catalogues astronomiques.
 Regroupe les outils d'extraction pour : étoiles, étoiles binaires.
-(MAST / exoplanètes : voir l'onglet Analyse des données → Catalogues MAST.)
+(MAST / exoplanètes : voir Photométrie Exoplanètes, panneau droit → A. Catalogues MAST.)
 """
 
 import logging
@@ -107,7 +107,7 @@ class CataloguesTab(ttk.Frame):
         
         subtitle_label = ttk.Label(
             header_frame,
-            text="Outils d'extraction pour étoiles et étoiles binaires (MAST : Analyse des données)",
+            text="Outils d'extraction pour étoiles et étoiles binaires (MAST : Photométrie Exoplanètes, panneau droit)",
             font=("Helvetica", 9),
             foreground="gray"
         )
@@ -125,7 +125,7 @@ class CataloguesTab(ttk.Frame):
         
         self.log_message(
             "Interface d'extraction de catalogues prête.\n"
-            "Téléchargement MAST / courbes exoplanètes : menu Analyse des données → A. Catalogues MAST.",
+            "Téléchargement MAST / courbes exoplanètes : Photométrie Exoplanètes (panneau droit) → A. Catalogues MAST.",
             "info",
         )
     
@@ -658,7 +658,7 @@ class CataloguesTab(ttk.Frame):
     def create_exoplanets_tab(self, embed_parent):
         """Panneau MAST + TESS (FITS édité → LcTools .txt), intégré dans ``embed_parent``.
 
-        Utilisé depuis l'onglet Analyse des données (Catalogues MAST), pas depuis Catalogues.
+        Utilisé depuis le panneau droit de Photométrie Exoplanètes (sous-onglet A. Catalogues MAST), pas depuis l’onglet Catalogues général.
         """
         exoplanets_frame = ttk.Frame(embed_parent, padding=10)
         exoplanets_frame.pack(fill=tk.BOTH, expand=True)
