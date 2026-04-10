@@ -17,6 +17,8 @@ Version 1.0
 4. [Photométrie Exoplanètes (HOPS intégré)](#4-photométrie-exoplanètes)
 5. [Photométrie Astéroïdes](#5-photométrie-astéroïdes)
    - [5.1 Astrométrie Zero-Aperture](#51-astrométrie-zero-aperture)
+   - [5.2 Courbe de lumière, modèle harmonique, détrendage et ALCDEF](#52-courbe-de-lumière-modèle-harmonique-détrendage-et-alcdef)
+   - [5.3 Onglet Publication (jeu validé, S-ALCDEF)](#53-onglet-publication-jeu-validé-s-alcdef)
 6. [Photométrie Transitoires](#6-photométrie-transitoires)
 7. [Analyse de Données](#7-analyse-de-données)
    - [7.1 Sous-onglet A : Détermination Période](#71-sous-onglet-a--détermination-période)
@@ -57,7 +59,7 @@ L'interface principale contient plusieurs onglets dans un notebook :
 2. **Photométrie** → Extraire les courbes de lumière
 3. **Analyse de données** → Analyser les périodes, TTV, systèmes multiples
 
-**Première utilisation (distribution)** : exécutez **`INSTALLER_NPOAP_ASTROENV_WINDOWS.bat`** une fois (Miniconda + environnement conda **`astroenv`**, Python 3.11, puis `pip install -r requirements.txt` du profil). **Lancement** : **`lancement.bat`** active **astroenv** puis lance NPOAP (reproject, astropy, etc.).
+
 
 ---
 
@@ -413,6 +415,22 @@ L'onglet **Photométrie Astéroïdes** permet de mesurer la magnitude des astér
    - **10m** = ~18 points pour 3h (moins précis)
 4. **Récupérer** : Cliquez sur "🔭 Récupérer Éphémérides"
 
+### Éphémérides et ancres : quelle position pour la collecte et les rapports ?
+
+**Ordre de priorité dans NPOAP** pour remplir la position de la cible lors de la **collecte des observations** (messages de journal du type « Position T1 pour … », champs utiles aux rapports ADES, etc.) :
+
+1. **Table d’éphémérides chargée** — Après « 🔭 Récupérer Éphémérides », si l’interpolation au **JD du milieu d’exposition** de chaque image réussit, la **RA/Dec** utilisée pour cette collecte est **uniquement celle issue de la table** (JPL Horizons). Les coordonnées **pixel** éventuellement affichées dans le journal sont obtenues en projetant cette position avec le **WCS** du fichier FITS.
+2. **Ancres manuelles** — Si **aucune** position n’a pu être fixée par les éphémérides (pas de récupération, ou échec du calcul), mais que vous avez enregistré une position T1 sur la **première** et la **dernière** image de la série, la position sur les autres images est **interpolée** entre ces deux ancres (interpolation linéaire sur la sphère en fonction du JD), comme décrit plus bas pour les objets sans ID.
+
+**Point important** : tant que les éphémérides sont **chargées et utilisées avec succès**, les **ancres ne remplacent pas** cette trajectoire dans la collecte. Si l’éphéméride est **fausse** (mauvais numéro MPC, mauvaise désignation, orbite inadaptée, confusion d’objet, etc.), les RA/Dec enregistrés pour les rapports suivront cette erreur, **même** si le pointage visuel ou les ancres sur la vraie tache seraient meilleurs.
+
+**Recommandation** :
+
+- Si vous constatez que la trajectoire modèle **ne colle pas** à l’objet sur les images : **n’utilisez pas** la table d’éphémérides pour cette session (ne pas lancer « Récupérer Éphémérides », ou enchaîner une procédure sans cette étape selon votre flux), puis placez **deux ancres** fiables sur la **vraie** cible (première et dernière image, ou deux poses bien séparées dans le temps).
+- À l’inverse, une éphéméride **correcte** reste en général **préférable sur une longue série**, car deux ancres ne font qu’approximer le mouvement par une **ligne** sur la sphère entre deux instants ; sur quelques heures c’est souvent suffisant si les clics sont bons.
+
+**Affichage à l’écran (cercle T1)** : à l’ouverture d’une image, le marqueur peut aussi provenir des mots-clés FITS **`OBJCTRA` / `OBJCTDEC`** (y compris sexagésimal avec **espaces**, ex. `06 57 57`, ou avec **deux-points**) ou d’un **clic manuel**. Ce marqueur **n’est pas** la même chose que la position « rapport » : un décalage entre cercle et log « Position T1 pour … » incite à vérifier séparément **éphéméride**, **header** et **pointage**.
+
 ### Workflow pour objets sans ID (nouvelle découverte)
 
 Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans la base JPL Horizons, vous pouvez suivre ce workflow :
@@ -447,7 +465,7 @@ Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans 
 
 5. **Résultats photométriques**
    - Mode **comète (image par image)** :
-     - Bouton **"📸 PHOTOMÉTRIE IMAGE COURANTE (Comètes)"**
+     - Bouton **« Photométrie image »**
      - CSV cumulatif : **`results/<objet>_photometrie_image_par_image.csv`**
      - Colonnes : `filename, JD-UTC, date_obs, filter_used, delta-to_G, mag_T1_G, rmsMag_T1`
    - Mode **astéroïdes (batch)** :
@@ -468,8 +486,9 @@ Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans 
 
 ### Sélection de la cible (T1)
 
-1. **Position automatique** (si éphémérides disponibles) : Si les éphémérides sont chargées, la position de l'astéroïde est calculée automatiquement
-2. **Clic manuel** : Cliquez sur l'astéroïde dans l'image pour le sélectionner manuellement
+1. **Position automatique** (si éphémérides disponibles) : Si les éphémérides sont chargées, la position de l'astéroïde est calculée automatiquement (voir la section **Éphémérides et ancres** ci-dessus pour la priorité dans les **rapports**).
+2. **Clic manuel** : Cliquez sur l'astéroïde dans l'image pour le sélectionner manuellement.
+3. **Header FITS** : lors du chargement d’une image, le logiciel peut placer T1 à partir de **`OBJCTRA` / `OBJCTDEC`** (ou `RA` / `DEC` en secours), en interprétant les formats **sexagésimaux** classiques (séparateurs **:** ou **espaces**) ainsi que les **valeurs numériques** en degrés ou heures.
 
 ### Sélection des étoiles de comparaison
 
@@ -512,8 +531,8 @@ Avant de lancer la photométrie, vous devez choisir une méthode d'astrométrie 
 
 #### Modes de photométrie
 
-1. **Photométrie image par image (Comètes)** :
-   - **Bouton** : "📸 PHOTOMÉTRIE IMAGE COURANTE (Comètes)"
+1. **Photométrie image par image (comètes ou contrôle fin)** :
+   - **Bouton** : **« Photométrie image »**
    - **Fonctionnement** :
      - Traite uniquement l'image actuellement affichée
      - Utilise la configuration définie via **"⭕ SET-UP PHOTOMÉTRIE"**
@@ -570,7 +589,7 @@ Avant de lancer la photométrie, vous devez choisir une méthode d'astrométrie 
    - Validez la configuration
 
 3. **Traitement photométrique** :
-   - **Comètes** : utilisez "📸 PHOTOMÉTRIE IMAGE COURANTE (Comètes)" et avancez image par image
+   - **Comètes / image par image** : utilisez **« Photométrie image »** et avancez dans la série
    - **Astéroïdes** : utilisez "📊 PHOTOMÉTRIE BATCH (Astéroïdes)"
    - Le CSV de photométrie est compilé automatiquement dans `results`
 
@@ -701,6 +720,119 @@ Dans l'onglet **Photométrie Astéroïdes**, la section **"Paramètres Astromét
 - ✅ **Avantages** : Rapide, simple
 - ❌ **Inconvénients** : RMS généralement moins bon, moins robuste
 - **À utiliser si** : Vous voulez un résultat rapide, contrôle de champ, test rapide
+
+### 5.2 Courbe de lumière, modèle harmonique, détrendage et ALCDEF
+
+Dans l’onglet **Photométrie Astéroïdes**, sous-onglet **2. Photométrie**, la colonne droite contient l’**analyse de courbe de lumière** (fichier temps / flux issu de la photométrie batch ou d’un export). Vous pouvez estimer une **période de rotation**, appliquer un **détrendage** lent, ajuster un **modèle** (Fourier ou cosinus), puis **valider** le jeu pour l’onglet **3. Publication** (voir [5.3](#53-onglet-publication-jeu-validé-s-alcdef)).
+
+**Organisation (onglet 2)** — ordre vertical approximatif :
+
+1. **Fichier courbe de lumière** : chemin, **Parcourir**, **Charger**.  
+2. **Détrendage** : méthode (voir ci-dessous), champs optionnels **SG pts** (Savitzky–Golay) et **Wōtan j** (fenêtre en jours), bouton **Appliquer**.  
+3. **Périodogramme (Lomb-Scargle)** et **Modèle** (côte à côte).  
+4. **Graphiques** (courbe temps + phase), redimensionnés pour occuper l’espace disponible.  
+5. **Valider pour publication…** : enregistre le fichier modèle et alimente l’onglet 3 (détail en [5.3](#53-onglet-publication-jeu-validé-s-alcdef)).
+
+#### Détrendage (séries longues)
+
+Le cadre **« Détrendage (sur données brutes du fichier) »** recalcule la courbe **affichée** à partir des **données brutes** du fichier à chaque **Appliquer** ou à chaque **Charger** : les tendances lentes (extinction, conditions, etc.) peuvent être atténuées avant Lomb-Scargle et le modèle.
+
+Méthodes proposées (liste déroulante) :
+
+- **Aucun** : pas de modification (hors recopie depuis le brut).  
+- **Polynôme degré 1, 2 ou 3** : retrait d’un polynôme en temps (centré), en conservant un niveau proche du flux médian ; les erreurs ne sont pas modifiées.  
+- **Savitzky–Golay** : lissage puis soustraction additive ; la **fenêtre en points** peut rester vide (choix automatique) ou être saisie (nombre **impair** de points).  
+- **Wōtan biweight** / **Wōtan median** : estimateurs robustes de type `wotan.flatten` sur la durée couverte ; la fenêtre en **jours** peut rester vide (valeur dérivée de l’étendue temporelle). Ces lignes n’apparaissent **que si** le paquet Python **`wotan`** est installé (voir `requirements.txt` et les remerciements).
+
+#### Invalidation de la « validation publication »
+
+Sans recharger le fichier, la validation pour l’onglet 3 est **annulée** dès que vous :
+
+- **Appliquez** un autre détrendage ;  
+- lancez **Lancer Lomb-Scargle** ;  
+- cliquez sur **Calculer le modèle** ou **Ajuster (inversion)**.
+
+Tout **nouveau chargement** de courbe (ou rechargement automatique après photométrie batch) réinitialise aussi la validation. Il faut alors **Valider pour publication** à nouveau.
+
+#### Rôle de la section « 3. Modèle » (harmonique ou manuel)
+
+Après avoir chargé une courbe et, en général, fixé une **période \(P\)** (jours) — souvent issue du **Lomb–Scargle** —, l’étape **3** ajuste une **variation périodique** du flux dans le temps, typique d’une **courbe de rotation** d’astéroïde.
+
+**Deux modes** (libellé de l’encadré) :
+
+1. **Série de Fourier + offset (P fixe)** — *modèle harmonique*  
+   Moindres carrés **pondérés** (les erreurs de flux sont prises en compte) avec **\(P\) imposé** (champ **P (j)**). Le flux est modélisé par  
+   \[
+   \mathrm{flux} \approx b_0 + \sum_{k=1}^{N} \bigl[ a_k \cos(k\,\omega (t - t_{\mathrm{ref}})) + b_k \sin(k\,\omega (t - t_{\mathrm{ref}})) \bigr]
+   \]  
+   avec \(\omega = 2\pi / P\), et éventuellement une **dérive linéaire** (tendance lente : extinction, conditions, etc.) si la case **« Dérive linéaire (tendance / extinction) »** est cochée.
+
+   - **Harmoniques \(N\)** (valeur 1 à 8, défaut souvent 3) : nombre de termes de Fourier à la fréquence fondamentale \(1/P\) et à ses harmoniques \(k/P\).  
+   - **\(N = 1\)** : une seule sinusoïde de période \(P\).  
+   - **\(N \geq 2\)** : formes **non sinusoïdales** (deux bosses, etc.). Si la fenêtre temporelle ne couvre qu’une **faible fraction** de \(P\), une seule harmonique est souvent **mal contrainte** ; augmenter \(N\) peut améliorer l’ajustement lorsque la forme n’est pas purement sinusoïdale. L’interface peut signaler un modèle **fragile** lorsque \(\Delta t / P\) est petit.
+
+2. **Modèle manuel** \(F_0 \cdot (1 + A\cos(2\pi(t-t_0)/P))\)  
+   Si la case **« Série de Fourier + offset (P fixe) »** est **décochée**, le modèle est un **cosinus simple** : niveau **\(F_0\)**, amplitude relative **\(A\)**, phase via **\(t_0\)** (JD). Les paramètres sont ceux des champs **t0**, **A**, **F0** (éventuellement complétés après d’autres actions comme **Inversion**).
+
+#### Comment choisir \(N\)
+
+| Situation | Conseil |
+|-----------|--------|
+| Peu de points ou moins d’environ **un quart de période** couverte | Rester à **\(N = 1\) ou 2\)** ; éviter des \(N\) élevés qui sur-ajustent. |
+| Courbe à **une bosse** (à peu près sinusoïdale) | **\(N = 1\)** ou **2** suffit souvent. |
+| **Deux bosses** ou forme nettement **non sinusoïdale** | Essayer **\(N = 2\)**, puis **3** ; comparer **χ²**, les **résidus** et la **courbe de phase**. |
+| **\(N\)** grand (4–8) | Réservé à **beaucoup de points** et une **bonne couverture en phase** (souvent plusieurs rotations ou une large fraction de \(P\)). |
+
+**Méthode pratique** : partir de **\(N = 2\) ou 3**, augmenter si le modèle sous-ajuste visiblement, diminuer si la courbe modèle devient trop « bruitée » entre les points sans gain de χ².
+
+#### Interpréter **t0** et **A**
+
+- **Mode manuel** (\(F_0(1 + A\cos(\ldots))\)) :  
+  - **\(t_0\)** (JD) : époque où le **cosinus vaut +1**, donc **maximum de flux** (pour \(A > 0\)).  
+  - **\(A\)** : **amplitude relative sans dimension sur le flux**, pas directement une amplitude en **magnitudes**. En petite amplitude, \(A \approx \Delta\mathrm{flux}/F_0\) ; en ordre de grandeur si \(A \ll 1\), \(\Delta m \approx 1{,}09 \times A\) (soit \(2{,}5/\ln 10\)).
+
+- **Mode Fourier** (\(N \geq 1\)) : le modèle réel est une **somme** de cosinus et sinus ; il n’existe plus un unique « instant de maximum » comme pour une seule sinusoïde. NPOAP calcule tout de même un **\(t_0\) équivalent** et un **\(A\) approximatif** à partir de la **première harmonique** uniquement, pour remplir les champs et rapprocher l’affichage du modèle cosinus. Si **\(N \geq 2\)** et que la forme est irrégulière, **\(t_0\)** et **\(A\)** affichés sont une **simplification** : la **courbe rouge** du graphe suit le **modèle Fourier complet**.
+
+#### Graphiques (temps et phase)
+
+- **Courbe en fonction du temps (JD)** : ordre réel des observations, lacunes, dérives résiduelles ; sur de longues durées la forme de rotation peut paraître **compressée** sur l’axe temps.  
+- **Courbe en phase** : données repliées modulo **\(P\)** ; en général plus lisible pour la **morphologie** de la rotation sur une longue série.  
+- **Fourier** : la phase est construite pour **aligner la première harmonique** ; les points et le modèle sont repliables en phase de façon cohérente avec \(\alpha\) (déphasage du terme \(k=1\)).  
+- **Manuel** : la phase est basée sur \((t - t_0) \bmod P\) : **\(t_0\)** fixe l’**origine de phase** à 0 sur l’axe « phase ».
+
+### 5.3 Onglet Publication (jeu validé, S-ALCDEF)
+
+L’onglet **3. Publication** ne repose **pas** sur la courbe « en cours d’édition » dans l’onglet 2 : il utilise uniquement le **dernier jeu validé** explicitement.
+
+#### Bouton « Valider pour publication » (onglet 2)
+
+Après détrendage, Lomb-Scargle et modèle souhaités, cliquez sur **Valider pour publication…** (sous les graphiques). NPOAP :
+
+- enregistre un fichier texte **`{ID}_asteroid_model.txt`** ( **`ID`** dérivé du champ **ID cible** de la session, sinon du **N° MPC** saisi en Publication, sinon `UNKNOWN` ; caractères spéciaux adaptés au nom de fichier) ;  
+- emplacement par défaut : sous-dossier **`results`** du dossier d’images chargé, ou **`results`** à côté du fichier de courbe si aucun dossier de session, ou dossier choisi par dialogue ;  
+- le fichier contient des **lignes d’en-tête** (date UTC, nombre de points, méthode de détrendage, paramètres de modèle **P**, **t0**, **A**, **F0**, χ² si disponibles) puis les colonnes **JD_UTC**, **flux**, **flux_err** (deux colonnes seulement si pas d’erreurs) ;  
+- **fige** ce jeu en mémoire pour l’export ALCDEF et le rapport ;  
+- bascule l’affichage vers l’onglet **3. Publication**.
+
+Tant que vous n’avez pas validé, le rapport indique qu’il faut valider depuis l’onglet 2 ; le bouton **Enregistrer S-ALCDEF…** refuse l’export sans jeu validé.
+
+#### Contenu de l’onglet 3
+
+- Bandeau d’**état** (jeu actif ou rappel de validation).  
+- Métadonnées (N° MPC, observateurs, MagBand, etc.) et **rapport** de soumission généré à partir du **jeu validé** uniquement.  
+- **Enregistrer S-ALCDEF…** : fichier **Simple ALCDEF** (JD, magnitude, erreur) ; un commentaire peut mentionner le chemin du fichier `*_asteroid_model.txt`.  
+- Les paramètres **\(P\), \(A\), \(t_0\)** dans le rapport reflètent le **modèle figé au moment de la validation** ; pour un Fourier à **\(N>1\)**, la ligne « cosinus » reste une **approximation** (voir ci-dessous).
+
+#### ALCDEF et rapport de soumission (rappel)
+
+- Le fichier **S-ALCDEF** contient surtout les **données** : **JD**, **magnitude**, **erreur** (format Simple ALCDEF — voir [alcdef.org](https://alcdef.org/)). Les paramètres **\(P\), \(A\), \(t_0\)** ne font pas partie du bloc **DATA** standard.
+- Le **texte d’aide** peut mentionner un ajustement **« modèle cosinus »** avec **\(P\), \(A\), \(t_0\)** : si vous avez utilisé un **Fourier à \(N>1\)**, cette ligne résume une **approximation cosinus** ; la description scientifique complète repose sur le **tracé du modèle**, le **χ²** et les **résidus**.
+- Pour les publications ou LCDB, une **amplitude en magnitude** est souvent donnée par **écart min–max** des magnitudes (ou une définition dédiée) ; NPOAP peut aussi indiquer une **amplitude indicative en mag** dans le rapport — **distincte** de **\(A\)** (flux relatif du modèle cosinus).
+
+#### Vérifications avant envoi
+
+- Contrôler les métadonnées (bande magnétique ALCDEF, observateurs, filtre) sur le formulaire / guide [ALCDEF](https://alcdef.org/).  
+- Valider le fichier avec **ALCDEFVerify** lorsque c’est requis par la procédure de dépôt.
 
 ---
 

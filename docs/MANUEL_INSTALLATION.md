@@ -2,7 +2,7 @@
 
 **NPOAP - Nouvelle Plateforme d'Observation et d'Analyse Photométrique**
 
-Version 1.0 (révisions procédure : vérification `test_installation.py`, CuPy/`importlib.metadata`, ligne KBMOD dans `requirements.txt`)
+Version 1.0 (révisions : vérification `test_installation.py`, CuPy/`importlib.metadata`, ligne KBMOD dans `requirements.txt`, dépendance **wotan** pour détrendage TTV/Tc)
 
 **Responsable HOPS-modified** : J.P Vignes  
 **Contact** : jeanpascal.vignes@gmail.com
@@ -153,7 +153,7 @@ Si vous préférez utiliser Python sans Conda :
    - **stdpipe**, **synphot** : pipelines photométriques / SED
    - **ezpadova** (dépôt Git, ligne `git+https://github.com/mfouesneau/ezpadova` dans le fichier) : isochrones PARSEC pour l’analyse d’amas
    - Les bibliothèques pour l'extraction de catalogues (requests pour MPC, TESS EBS, Exoplanet.eu)
-   - Les outils d'analyse (emcee, statsmodels, pylightcurve)
+   - Les outils d'analyse (emcee, statsmodels, pylightcurve, **wotan** : détrendage optionnel des segments de transit dans le viewer d’affinage Tc / TTV)
    - Les outils optionnels ou avancés (phoebe, rebound, ultranest, etc.)
 
    **Note** : Les packages **ezpadova** (isochrones PARSEC pour l'onglet Analyse d'amas) et **Prospector** ne sont pas sur PyPI ; ils doivent être installés séparément depuis GitHub (voir section 5).
@@ -179,6 +179,7 @@ pip install emcee>=3.1.0
 pip install "phoebe>=2.4.22,<2.5"
 pip install reportlab>=3.6.0
 pip install pylightcurve>=4.0.0
+pip install wotan>=1.9
 pip install statsmodels>=0.13.0
 ```
 
@@ -832,6 +833,10 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
   - Développée par l'équipe UCL Exoplanets (University College London)
   - Utilisée pour la modélisation des transits d'exoplanètes, le calcul des coefficients d'assombrissement du limbe, et l'ajustement flexible de courbes de lumière multi-époques
   - Licence MIT
+
+- **wotan (Wōtan)** : détrendage de courbes de lumière (https://github.com/hippke/wotan)
+  - Utilisé en option pour préparer le segment autour d’un transit avant l’ajustement trapézoïdal du Tc (masque transit basé sur Tc et T14) ; voir *Manuel utilisateur*, Analyse de données §7.1
+  - Citation : Hippke et al. (2019), *AJ*, 158, 143
 
 - **Pillow (PIL)** : Bibliothèque de traitement d'images (https://python-pillow.org/)
   - Utilisée pour le traitement et la manipulation d'images

@@ -54,9 +54,10 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
   - Utilisée pour la modélisation des transits d'exoplanètes, le calcul des coefficients d'assombrissement du limbe, et l'ajustement flexible de courbes de lumière multi-époques
   - Licence MIT
 
-- **Wōtan (wotan)** : détrendage robuste de séries temporelles pour la photométrie de transits (https://github.com/hippke/wotan)
-  - Développé par **Michael Hippke** et collaborateurs ; interface Python unifiée pour de nombreux estimateurs (biweight, splines, etc.)
+- **Wōtan (wotan)** : détrendage robuste de séries temporelles pour la photométrie de transits et, plus généralement, les courbes de lumière (https://github.com/hippke/wotan)
+  - Développé par **Michael Hippke** et collaborateurs ; interface Python unifiée pour de nombreux estimateurs (biweight, médiane, splines, etc.)
   - Utilisé dans NPOAP en **option** dans le viewer d’affinage du temps de transit central (Analyse de données → période → courbe avec marqueurs) : `flatten` avec **masque transit** dérivé du Tc courant et de la largeur T14 saisie, puis normalisation locale hors transit
+  - Utilisé également dans l’onglet **Photométrie astéroïdes** (analyse de courbe de lumière, cadre **Détrendage**) : méthodes **Wōtan biweight** et **Wōtan median** sur toute la série, via le module `core/asteroid_lc_detrend.py` (fenêtre temporelle en jours, automatique ou saisie ; les options Wōtan n’apparaissent que si le paquet `wotan` est installé)
   - **Citation** : Hippke, David, Mulders & Heller (2019), *AJ*, 158, 143 ; DOI [10.3847/1538-3881/ab3984](https://doi.org/10.3847/1538-3881/ab3984) ; arXiv:1906.00966
   - Licence MIT
 
@@ -299,6 +300,7 @@ Nous remercions particulièrement :
 - L'équipe **BD-J** (Benjamin Johnson et collaborateurs) pour Prospector et sedpy, outils essentiels pour l'analyse spectroscopique avancée
 - L'équipe **FSPS** (Charlie Conroy et collaborateurs) pour leur code de synthèse de populations stellaires
 - L'équipe **UCL Exoplanets** pour pylightcurve
+- **Michael Hippke** et collaborateurs pour **Wōtan** (wotan), outil de référence pour le détrendage de courbes de lumière de transits
 - La communauté astronomique open-source pour ses contributions continues et le partage de connaissances qui rendent des outils comme NPOAP possibles
 
 ---
