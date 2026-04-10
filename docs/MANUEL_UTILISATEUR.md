@@ -18,7 +18,7 @@ Version 1.0
 5. [Photométrie Astéroïdes](#5-photométrie-astéroïdes)
    - [5.1 Astrométrie Zero-Aperture](#51-astrométrie-zero-aperture)
    - [5.2 Courbe de lumière, modèle harmonique, détrendage et ALCDEF](#52-courbe-de-lumière-modèle-harmonique-détrendage-et-alcdef)
-   - [5.2a Surimpression modèle DAMIT](#52a-surimpression-modèle-damit)
+   - [5.2a Surimpression modèle DAMIT](#52a-damit-surimpression)
    - [5.3 Onglet Publication (jeu validé, S-ALCDEF)](#53-onglet-publication-jeu-validé-s-alcdef)
 6. [Photométrie Transitoires](#6-photométrie-transitoires)
 7. [Analyse de Données](#7-analyse-de-données)
@@ -728,18 +728,19 @@ Dans l’onglet **Photométrie Astéroïdes**, sous-onglet **2. Photométrie**, 
 
 **Organisation (onglet 2)** — ordre vertical approximatif :
 
-1. **Fichier courbe de lumière** : chemin, **Parcourir**, **Charger** — uniquement une série **temps (JD-UTC) + flux** (éventuellement erreur), telle que produite par la photométrie NPOAP (`light_curve.txt` ou `results.csv`).  
-1b. **Modèle DAMIT (surimpression phase)** : chargement optionnel d’un second fichier `light_curve.txt` **téléchargé depuis le site DAMIT** (phase de rotation 0–1 et flux relatif) pour le **tracer par-dessus** la courbe de phase de vos observations (voir [5.2a](#52a-surimpression-modèle-damit)).  
-2. **Détrendage** : méthode (voir ci-dessous), champs optionnels **SG pts** (Savitzky–Golay) et **Wōtan j** (fenêtre en jours), bouton **Appliquer**.  
-3. **Périodogramme (Lomb-Scargle)** et **Modèle** (côte à côte).  
-4. **Graphiques** (courbe temps + phase), redimensionnés pour occuper l’espace disponible.  
-5. **Valider pour publication…** : enregistre le fichier modèle et alimente l’onglet 3 (détail en [5.3](#53-onglet-publication-jeu-validé-s-alcdef)).
+1. **Fichier courbe de lumière et détrendage** : dans le **cadre de gauche**, **Parcourir** / **Charger** une série **temps (JD-UTC) + flux** (éventuellement erreur), puis **sous** le statut de chargement, les contrôles de **détrendage** sur les données brutes (méthode, **SG pts**, **Wōtan j**, **Appliquer**) — voir [Détrendage](#détrendage-séries-longues) ci-dessous.  
+1b. **Modèle DAMIT (surimpression phase)** : sur la **même ligne** que le cadre 1, dans le **cadre de droite**, chargement optionnel du `light_curve.txt` **DAMIT** pour la surimpression sur la courbe de phase (voir [5.2a](#52a-damit-surimpression)).  
+2. **Périodogramme (Lomb-Scargle)** et **Modèle** (côte à côte).  
+3. **Graphiques** (courbe temps + phase), redimensionnés pour occuper l’espace disponible.  
+4. **Valider pour publication…** : enregistre le fichier modèle et alimente l’onglet 3 (détail en [5.3](#53-onglet-publication-jeu-validé-s-alcdef)).
+
+<span id="52a-damit-surimpression"></span>
 
 #### 5.2a Surimpression modèle DAMIT
 
 La base [**DAMIT**](https://damit.cuni.cz/) (*Database of Asteroid Models from Inversion Techniques*, Charles University) propose pour certains astéroïdes un fichier **`light_curve.txt`** à deux colonnes : **phase de rotation** (entre 0 et 1) et **flux relatif** (comme sur le graphique web du site), parfois avec une figure SVG équivalente.
 
-**Ce fichier n’est pas une courbe d’observations** : il ne contient pas de dates julienne. Si vous l’ouvrez avec **« 1. Fichier courbe de lumière »** puis **Charger**, NPOAP affiche une erreur et vous invite à utiliser le cadre **« 1b. Modèle DAMIT (surimpression sur la courbe de phase) »**.
+**Ce fichier n’est pas une courbe d’observations** : il ne contient pas de dates julienne. Si vous l’ouvrez via la zone **fichier** du cadre **1** (pas le bouton DAMIT) puis **Charger**, NPOAP affiche une erreur et vous invite à utiliser le cadre **« 1b. Modèle DAMIT »**.
 
 **Procédure recommandée**
 
@@ -758,7 +759,7 @@ La base [**DAMIT**](https://damit.cuni.cz/) (*Database of Asteroid Models from I
 
 #### Détrendage (séries longues)
 
-Le cadre **« Détrendage (sur données brutes du fichier) »** recalcule la courbe **affichée** à partir des **données brutes** du fichier à chaque **Appliquer** ou à chaque **Charger** : les tendances lentes (extinction, conditions, etc.) peuvent être atténuées avant Lomb-Scargle et le modèle.
+La section **détrendage** est regroupée **dans le cadre 1** (sous le séparateur, après le statut de chargement). Elle recalcule la courbe **affichée** à partir des **données brutes** du fichier à chaque **Appliquer** ou à chaque **Charger** : les tendances lentes (extinction, conditions, etc.) peuvent être atténuées avant Lomb-Scargle et le modèle.
 
 Méthodes proposées (liste déroulante) :
 
@@ -822,7 +823,7 @@ Après avoir chargé une courbe et, en général, fixé une **période \(P\)** (
 - **Courbe en phase** : données repliées modulo **\(P\)** ; en général plus lisible pour la **morphologie** de la rotation sur une longue série.  
 - **Fourier** : la phase est construite pour **aligner la première harmonique** ; les points et le modèle sont repliables en phase de façon cohérente avec \(\alpha\) (déphasage du terme \(k=1\)).  
 - **Manuel** : la phase est basée sur \((t - t_0) \bmod P\) : **\(t_0\)** fixe l’**origine de phase** à 0 sur l’axe « phase ».  
-- **Modèle DAMIT** : si vous en avez chargé un ([5.2a](#52a-surimpression-modèle-damit)), la courbe orange apparaît **uniquement** sur ce graphique de phase, avec le même abscisse **phase 0–1** que les observations.
+- **Modèle DAMIT** : si vous en avez chargé un ([5.2a](#52a-damit-surimpression)), la courbe orange apparaît **uniquement** sur ce graphique de phase, avec le même abscisse **phase 0–1** que les observations.
 
 ### 5.3 Onglet Publication (jeu validé, S-ALCDEF)
 
@@ -835,6 +836,7 @@ Après détrendage, Lomb-Scargle et modèle souhaités, cliquez sur **Valider po
 - enregistre un fichier texte **`{ID}_asteroid_model.txt`** ( **`ID`** dérivé du champ **ID cible** de la session, sinon du **N° MPC** saisi en Publication, sinon `UNKNOWN` ; caractères spéciaux adaptés au nom de fichier) ;  
 - emplacement par défaut : sous-dossier **`results`** du dossier d’images chargé, ou **`results`** à côté du fichier de courbe si aucun dossier de session, ou dossier choisi par dialogue ;  
 - le fichier contient des **lignes d’en-tête** (date UTC, nombre de points, méthode de détrendage, paramètres de modèle **P**, **t0**, **A**, **F0**, χ² si disponibles) puis les colonnes **JD_UTC**, **flux**, **flux_err** (deux colonnes seulement si pas d’erreurs) ;  
+- si la session contient des **comparateurs C1, C2, …** issus du **SET-UP photométrie** encore en mémoire, NPOAP interroge **Gaia DR3** (cone_search 3″) pour chaque position : en cas d’échec pour l’un d’eux, la validation est **refusée** ; en cas de succès, les **identifiants et photométrie Gaia** sont ajoutés en commentaires `# gaia_comp_*` dans le fichier modèle, et des lignes **ALCDEF** `EQUINOX=J2000.0`, `COMPNAME*n*`, `COMPRA*n*`, `COMPDEC*n*`, `COMPMAG*n*`, `COMPMAGBAND*n*` (= **GG** pour G), et si disponible `COMPCI*n*` / `COMPCIBAND*n*` (= **GBpGrp** pour BP−RP) sont **figées** pour l’**export S-ALCDEF** et le **rapport** ; s’il n’y a **aucun** comparateur dans la session, l’export reste possible **sans** ces lignes ;  
 - **fige** ce jeu en mémoire pour l’export ALCDEF et le rapport ;  
 - bascule l’affichage vers l’onglet **3. Publication**.
 
@@ -844,7 +846,7 @@ Tant que vous n’avez pas validé, le rapport indique qu’il faut valider depu
 
 - Bandeau d’**état** (jeu actif ou rappel de validation).  
 - Métadonnées (N° MPC, observateurs, MagBand, etc.) et **rapport** de soumission généré à partir du **jeu validé** uniquement.  
-- **Enregistrer S-ALCDEF…** : fichier **Simple ALCDEF** (JD, magnitude, erreur) ; un commentaire peut mentionner le chemin du fichier `*_asteroid_model.txt`.  
+- **Enregistrer S-ALCDEF…** : fichier **Simple ALCDEF** (bloc **DATA** : JD, magnitude, erreur) ; entre **STARTBLOCK** et **STARTDATA**, des lignes **métadonnées** `EQUINOX` et **COMP*** peuvent être incluses si des comparateurs Gaia ont été résolus à la validation ; des commentaires `#` en tête de fichier peuvent mentionner le chemin du `*_asteroid_model.txt`.  
 - Les paramètres **\(P\), \(A\), \(t_0\)** dans le rapport reflètent le **modèle figé au moment de la validation** ; pour un Fourier à **\(N>1\)**, la ligne « cosinus » reste une **approximation** (voir ci-dessous).
 
 #### ALCDEF et rapport de soumission (rappel)
