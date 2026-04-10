@@ -99,6 +99,11 @@ from core.alcdef_export import (
     load_light_curve_txt,
     relative_flux_to_differential_magnitude,
 )
+from core.alcdef_gaia_comparators import (
+    build_alcdef_comparator_metadata_lines,
+    resolve_comparator_gaia_dr3,
+    serializable_dict_list,
+)
 from core.asteroid_lc_detrend import detrend_asteroid_lc, list_detrend_methods
 # --- CONFIGURATION ---
 warnings.filterwarnings("ignore", category=AstropyWarning)
@@ -6062,6 +6067,7 @@ class AsteroidPhotometryTab:
         )
         fit_snap = sn.get("fit") or {}
         fd = {k: fit_snap.get(k) for k in ("P", "t0", "A", "F0", "chi2", "n_dof", "success")}
+        comp_meta = sn.get("alcdef_comparator_metadata_lines")
         text = build_submission_report_lines(
             t,
             fl,
@@ -6070,6 +6076,7 @@ class AsteroidPhotometryTab:
             mag_e,
             self._lc_report_meta_from_gui(),
             fit=fd if fit_snap.get("success") else None,
+            alcdef_comparator_lines=comp_meta if comp_meta is not None else None,
         )
         hdr = f"=== Jeu validé : {sn.get('model_path', '')} ===\n\n"
         box.delete("1.0", tk.END)
@@ -6142,6 +6149,21 @@ class AsteroidPhotometryTab:
         safe = re.sub(r"[^\w\-.]+", "_", aid) if aid else ""
         return (safe[:80] if safe else "UNKNOWN").strip("_") or "UNKNOWN"
 
+    def _lc_ordered_comparator_selections(self):
+        """Sélections C1, C2, … (photométrie SET-UP), triées par numéro de comparateur."""
+        sels = getattr(self, "current_selections", None) or []
+        comps = [s for s in sels if str(s.get("label", "")).startswith("C")]
+
+        def _sort_key(s):
+            lab = str(s.get("label", "C999"))
+            try:
+                return int(lab[1:])
+            except ValueError:
+                return 999
+
+        comps.sort(key=_sort_key)
+        return comps
+
     def _lc_validate_for_publication(self):
         """
         Figée la courbe + paramètres de modèle courants, écrit {ID}_asteroid_model.txt,
@@ -6180,6 +6202,43 @@ class AsteroidPhotometryTab:
         except OSError as e:
             messagebox.showerror("Publication", f"Impossible de créer le dossier :\n{e}", parent=top)
             return
+
+        comp_sels = self._lc_ordered_comparator_selections()
+        gaia_records = []
+        alcdef_meta_lines = []
+        if comp_sels:
+            try:
+                top.config(cursor="watch")
+                top.update_idletasks()
+            except tk.TclError:
+                pass
+            failed_labels = []
+            for s in comp_sels:
+                lab = str(s.get("label", "?"))
+                coord = s.get("coord")
+                if coord is None:
+                    failed_labels.append(lab)
+                    continue
+                rec = resolve_comparator_gaia_dr3(coord, radius_arcsec=3.0)
+                if rec is None:
+                    failed_labels.append(lab)
+                else:
+                    gaia_records.append(rec)
+            try:
+                top.config(cursor="")
+            except tk.TclError:
+                pass
+            if failed_labels:
+                messagebox.showerror(
+                    "Publication",
+                    "Impossible de résoudre tous les comparateurs en Gaia DR3 (cone_search 3″, G fini).\n\n"
+                    f"Échec : {', '.join(failed_labels)}\n\n"
+                    "Vérifiez le réseau, le catalogue Gaia, et que la session photométrie correspond "
+                    "encore aux positions des comparateurs.",
+                    parent=top,
+                )
+                return
+            alcdef_meta_lines = build_alcdef_comparator_metadata_lines(gaia_records)
 
         path = out_dir / f"{tid}_asteroid_model.txt"
         t = np.asarray(self.lc_data["time"], dtype=float)
@@ -6223,6 +6282,14 @@ class AsteroidPhotometryTab:
                 lines.append(f"# fit_{k}: {fit_copy[k]}")
         if fit_copy.get("message"):
             lines.append(f"# fit_message: {fit_copy['message']}")
+        if gaia_records:
+            lines.append(f"# n_gaia_comparators: {len(gaia_records)}")
+            for i, r in enumerate(gaia_records, start=1):
+                lines.append(f"# gaia_comp_{i}_source_id: {r.source_id}")
+                lines.append(f"# gaia_comp_{i}_ICRS_deg: {r.ra_deg:.8f} {r.dec_deg:.8f}")
+                lines.append(f"# gaia_comp_{i}_phot_g_mean_mag: {r.phot_g_mean_mag:.6f}")
+                if r.bp_rp is not None:
+                    lines.append(f"# gaia_comp_{i}_bp_rp: {r.bp_rp:.6f}")
         lines.append("# colonnes: JD_UTC flux flux_err")
         body_meta = "\n".join(lines) + "\n"
 
@@ -6247,6 +6314,8 @@ class AsteroidPhotometryTab:
             "model_path": str(path),
             "validated_at": ts,
             "detrend_label": detrend_lbl,
+            "gaia_comparators": serializable_dict_list(gaia_records),
+            "alcdef_comparator_metadata_lines": list(alcdef_meta_lines),
         }
         if getattr(self, "lc_publication_status_var", None):
             self.lc_publication_status_var.set(
@@ -6262,11 +6331,13 @@ class AsteroidPhotometryTab:
                 nb.select(2)
             except tk.TclError:
                 pass
-        messagebox.showinfo(
-            "Publication",
-            f"Courbe validée.\n\nFichier modèle :\n{path}\n\nL’onglet « 3. Publication » est alimenté avec ce jeu.",
-            parent=top,
+        _msg_pub = (
+            f"Courbe validée.\n\nFichier modèle :\n{path}\n\n"
+            f"L’onglet « 3. Publication » est alimenté avec ce jeu."
         )
+        if gaia_records:
+            _msg_pub += f"\n\nComparateurs Gaia DR3 résolus pour ALCDEF : {len(gaia_records)}."
+        messagebox.showinfo("Publication", _msg_pub, parent=top)
 
     def _lc_report_meta_from_gui(self) -> ReportMeta:
         return ReportMeta(
@@ -6402,12 +6473,14 @@ class AsteroidPhotometryTab:
                 f"Modèle validé NPOAP: {sn.get('model_path', '')}",
             ]
             comments = [c for c in comments if c]
+            comp_lines = sn.get("alcdef_comparator_metadata_lines")
             body = build_simple_alcdef_text(
                 t_sn,
                 mag,
                 mag_e,
                 delimiter="|",
                 comment_lines=comments or None,
+                alcdef_metadata_lines=comp_lines if comp_lines else None,
             )
             try:
                 with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -6437,11 +6510,21 @@ class AsteroidPhotometryTab:
         default_path = self._discover_default_lightcurve_path()
 
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(4, weight=1)
+        parent.rowconfigure(2, weight=1)
 
-        # --- 1. Fichier (compact, une ligne de saisie + statut) ---
-        file_frame = ttk.LabelFrame(parent, text="1. Fichier courbe de lumière", padding=(6, 4))
-        file_frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 2))
+        # --- Ligne 0 : cadres 1 (observations) et 1b (DAMIT) côte à côte ---
+        lc_top_pair = ttk.Frame(parent)
+        lc_top_pair.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 2))
+        lc_top_pair.columnconfigure(0, weight=1, uniform="lc_top")
+        lc_top_pair.columnconfigure(1, weight=1, uniform="lc_top")
+
+        # --- 1. Fichier + détrendage (données brutes) — colonne gauche ---
+        file_frame = ttk.LabelFrame(
+            lc_top_pair,
+            text="1. Fichier courbe de lumière et détrendage (données brutes)",
+            padding=(6, 4),
+        )
+        file_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2), pady=0)
         self.lc_path_var = tk.StringVar(value=default_path)
         _f1_bar = ttk.Frame(file_frame)
         _f1_bar.pack(fill=tk.X)
@@ -6539,9 +6622,51 @@ class AsteroidPhotometryTab:
         file_frame.bind("<Configure>", _lc_file_status_wrap, add=True)
         _lc_status_lbl.pack(fill=tk.X, padx=2, pady=(2, 0), anchor=tk.W)
 
-        # --- Détrendage lent (séries longues) ---
-        damit_frame = ttk.LabelFrame(parent, text="1b. Modèle DAMIT (surimpression sur la courbe de phase)", padding=(6, 4))
-        damit_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 2))
+        ttk.Separator(file_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=2, pady=(8, 4))
+        _dt_wrap = ttk.Frame(file_frame)
+        _dt_wrap.pack(fill=tk.X, padx=0, pady=0)
+        _dt_row = ttk.Frame(_dt_wrap)
+        _dt_row.pack(fill=tk.X)
+        ttk.Label(_dt_row, text="Détrendage — méthode :").pack(side=tk.LEFT, padx=(0, 4))
+        _lc_methods = list_detrend_methods()
+        self._lc_detrend_label_to_key = {lab: key for key, lab in _lc_methods}
+        _lc_method_labels = [lab for _key, lab in _lc_methods]
+        self.lc_detrend_combo = ttk.Combobox(
+            _dt_row,
+            values=_lc_method_labels,
+            width=28,
+            state="readonly",
+        )
+        self.lc_detrend_combo.pack(side=tk.LEFT, padx=2)
+        if _lc_method_labels:
+            self.lc_detrend_combo.set(_lc_method_labels[0])
+        self.lc_detrend_savgol_wl_var = tk.StringVar(value="")
+        self.lc_detrend_wotan_wl_var = tk.StringVar(value="")
+        ttk.Label(_dt_row, text="SG pts:").pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Entry(_dt_row, textvariable=self.lc_detrend_savgol_wl_var, width=5).pack(side=tk.LEFT, padx=0)
+        ttk.Label(_dt_row, text="Wōtan j:").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Entry(_dt_row, textvariable=self.lc_detrend_wotan_wl_var, width=7).pack(side=tk.LEFT, padx=0)
+
+        self.lc_detrend_status_var = tk.StringVar(value="")
+
+        def _lc_apply_detrend_clicked():
+            if self.lc_raw_data["time"] is None:
+                messagebox.showwarning("Détrendage", "Chargez d'abord une courbe de lumière.")
+                return
+            self._lc_apply_detrend_to_working()
+            try:
+                _refresh_plots()
+            except Exception as pe:
+                logger.exception("Tracé après détrendage: %s", pe)
+
+        ttk.Button(_dt_row, text="Appliquer", command=_lc_apply_detrend_clicked).pack(side=tk.LEFT, padx=8)
+        ttk.Label(_dt_wrap, textvariable=self.lc_detrend_status_var, font=("Helvetica", 8), foreground="gray").pack(
+            anchor="w", padx=2, pady=(4, 0)
+        )
+
+        # --- 1b. Modèle DAMIT (surimpression phase) ---
+        damit_frame = ttk.LabelFrame(lc_top_pair, text="1b. Modèle DAMIT (surimpression sur la courbe de phase)", padding=(6, 4))
+        damit_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 0), pady=0)
         self.lc_damit_show_var = tk.BooleanVar(value=True)
         self.lc_damit_shift_var = tk.StringVar(value="0")
         self.lc_damit_scale_auto_var = tk.BooleanVar(value=True)
@@ -6619,50 +6744,9 @@ class AsteroidPhotometryTab:
             anchor="w", padx=2, pady=(4, 0)
         )
 
-        detrend_frame = ttk.LabelFrame(parent, text="Détrendage (sur données brutes du fichier)", padding=(6, 4))
-        detrend_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 2))
-        _dt_row = ttk.Frame(detrend_frame)
-        _dt_row.pack(fill=tk.X)
-        ttk.Label(_dt_row, text="Méthode :").pack(side=tk.LEFT, padx=(0, 4))
-        _lc_methods = list_detrend_methods()
-        self._lc_detrend_label_to_key = {lab: key for key, lab in _lc_methods}
-        _lc_method_labels = [lab for _key, lab in _lc_methods]
-        self.lc_detrend_combo = ttk.Combobox(
-            _dt_row,
-            values=_lc_method_labels,
-            width=38,
-            state="readonly",
-        )
-        self.lc_detrend_combo.pack(side=tk.LEFT, padx=2)
-        if _lc_method_labels:
-            self.lc_detrend_combo.set(_lc_method_labels[0])
-        self.lc_detrend_savgol_wl_var = tk.StringVar(value="")
-        self.lc_detrend_wotan_wl_var = tk.StringVar(value="")
-        ttk.Label(_dt_row, text="SG pts:").pack(side=tk.LEFT, padx=(8, 2))
-        ttk.Entry(_dt_row, textvariable=self.lc_detrend_savgol_wl_var, width=5).pack(side=tk.LEFT, padx=0)
-        ttk.Label(_dt_row, text="Wōtan j:").pack(side=tk.LEFT, padx=(6, 2))
-        ttk.Entry(_dt_row, textvariable=self.lc_detrend_wotan_wl_var, width=7).pack(side=tk.LEFT, padx=0)
-
-        self.lc_detrend_status_var = tk.StringVar(value="")
-
-        def _lc_apply_detrend_clicked():
-            if self.lc_raw_data["time"] is None:
-                messagebox.showwarning("Détrendage", "Chargez d'abord une courbe de lumière.")
-                return
-            self._lc_apply_detrend_to_working()
-            try:
-                _refresh_plots()
-            except Exception as pe:
-                logger.exception("Tracé après détrendage: %s", pe)
-
-        ttk.Button(_dt_row, text="Appliquer", command=_lc_apply_detrend_clicked).pack(side=tk.LEFT, padx=8)
-        ttk.Label(detrend_frame, textvariable=self.lc_detrend_status_var, font=("Helvetica", 8), foreground="gray").pack(
-            anchor="w", padx=2, pady=(2, 0)
-        )
-
-        # --- Ligne 3 : périodogramme + modèle (côte à côte) ---
+        # --- Ligne 1 : périodogramme + modèle (côte à côte) ---
         lc_mid = ttk.Frame(parent)
-        lc_mid.grid(row=3, column=0, sticky="nsew", padx=0, pady=(0, 2))
+        lc_mid.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 2))
         lc_mid.columnconfigure(0, weight=1, uniform="lc_mid")
         lc_mid.columnconfigure(1, weight=1, uniform="lc_mid")
 
@@ -7005,7 +7089,7 @@ class AsteroidPhotometryTab:
 
         # --- 4. Graphiques : occupe l'espace vertical restant (redimensionnement dynamique) ---
         plots_frame = ttk.LabelFrame(parent, text="4. Graphiques (courbe, phase)", padding=4)
-        plots_frame.grid(row=4, column=0, sticky="nsew", padx=4, pady=2)
+        plots_frame.grid(row=2, column=0, sticky="nsew", padx=4, pady=2)
         plots_frame.rowconfigure(0, weight=1)
         plots_frame.rowconfigure(1, weight=0)
         plots_frame.columnconfigure(0, weight=1)
