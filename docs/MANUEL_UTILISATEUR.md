@@ -18,6 +18,7 @@ Version 1.0
 5. [Photométrie Astéroïdes](#5-photométrie-astéroïdes)
    - [5.1 Astrométrie Zero-Aperture](#51-astrométrie-zero-aperture)
    - [5.2 Courbe de lumière, modèle harmonique, détrendage et ALCDEF](#52-courbe-de-lumière-modèle-harmonique-détrendage-et-alcdef)
+   - [5.2a Surimpression modèle DAMIT](#52a-surimpression-modèle-damit)
    - [5.3 Onglet Publication (jeu validé, S-ALCDEF)](#53-onglet-publication-jeu-validé-s-alcdef)
 6. [Photométrie Transitoires](#6-photométrie-transitoires)
 7. [Analyse de Données](#7-analyse-de-données)
@@ -727,11 +728,33 @@ Dans l’onglet **Photométrie Astéroïdes**, sous-onglet **2. Photométrie**, 
 
 **Organisation (onglet 2)** — ordre vertical approximatif :
 
-1. **Fichier courbe de lumière** : chemin, **Parcourir**, **Charger**.  
+1. **Fichier courbe de lumière** : chemin, **Parcourir**, **Charger** — uniquement une série **temps (JD-UTC) + flux** (éventuellement erreur), telle que produite par la photométrie NPOAP (`light_curve.txt` ou `results.csv`).  
+1b. **Modèle DAMIT (surimpression phase)** : chargement optionnel d’un second fichier `light_curve.txt` **téléchargé depuis le site DAMIT** (phase de rotation 0–1 et flux relatif) pour le **tracer par-dessus** la courbe de phase de vos observations (voir [5.2a](#52a-surimpression-modèle-damit)).  
 2. **Détrendage** : méthode (voir ci-dessous), champs optionnels **SG pts** (Savitzky–Golay) et **Wōtan j** (fenêtre en jours), bouton **Appliquer**.  
 3. **Périodogramme (Lomb-Scargle)** et **Modèle** (côte à côte).  
 4. **Graphiques** (courbe temps + phase), redimensionnés pour occuper l’espace disponible.  
 5. **Valider pour publication…** : enregistre le fichier modèle et alimente l’onglet 3 (détail en [5.3](#53-onglet-publication-jeu-validé-s-alcdef)).
+
+#### 5.2a Surimpression modèle DAMIT
+
+La base [**DAMIT**](https://damit.cuni.cz/) (*Database of Asteroid Models from Inversion Techniques*, Charles University) propose pour certains astéroïdes un fichier **`light_curve.txt`** à deux colonnes : **phase de rotation** (entre 0 et 1) et **flux relatif** (comme sur le graphique web du site), parfois avec une figure SVG équivalente.
+
+**Ce fichier n’est pas une courbe d’observations** : il ne contient pas de dates julienne. Si vous l’ouvrez avec **« 1. Fichier courbe de lumière »** puis **Charger**, NPOAP affiche une erreur et vous invite à utiliser le cadre **« 1b. Modèle DAMIT (surimpression sur la courbe de phase) »**.
+
+**Procédure recommandée**
+
+1. Chargez et traitez d’abord **votre courbe** (JD + flux) comme d’habitude ; affichez la **courbe de phase** en fixant **\(P\)**, **Lomb-Scargle** si besoin, puis **Calculer le modèle** (Fourier ou cosinus manuel) pour que la phase affichée corresponde à votre analyse.  
+2. Dans **1b**, cliquez sur **Charger light_curve.txt (DAMIT)…** et sélectionnez le fichier issu du site.  
+3. Cochez **Afficher** : une courbe **orange en tirets** (*DAMIT (modèle)*) apparaît sur le **graphique de phase** (panneau du bas), sur le **même axe de phase** que les points et le modèle rouge.  
+4. **Déphasage [0–1]** : translation en phase du modèle DAMIT pour faire coïncider les bosses avec vos observations. La valeur utilisée est un décalage additif sur la phase (modulo 1).  
+5. **Auto (aligner aux observations)** : recherche automatique du déphasage qui minimise (au sens des moindres carrés) l’écart aux points, avec un **facteur d’échelle** optimal à chaque test ; après alignement, **Échelle auto (médiane)** est activée. Vous pouvez encore affiner le déphasage à la main.  
+6. **Échelle auto (médiane)** : multiplie le modèle DAMIT pour rapprocher globalement les flux du modèle de ceux des observations (échelle dérivée des médianes). Si vous décochez cette option, le **Facteur manuel** s’applique.  
+7. **Effacer modèle** retire la surimpression et les données DAMIT chargées.
+
+**Remarques**
+
+- La surimpression sert à **comparer visuellement** la forme de phase issue du modèle publié sur DAMIT avec vos données ; ce n’est pas un ajustement publié dans le fichier `*_asteroid_model.txt` ni dans l’export ALCDEF.  
+- Après modification du **déphasage** ou du **facteur** uniquement, recliquez sur **Calculer le modèle** si le graphique ne se met pas à jour (les cases **Afficher** et **Échelle auto** déclenchent un redessin lorsque c’est possible).
 
 #### Détrendage (séries longues)
 
@@ -798,7 +821,8 @@ Après avoir chargé une courbe et, en général, fixé une **période \(P\)** (
 - **Courbe en fonction du temps (JD)** : ordre réel des observations, lacunes, dérives résiduelles ; sur de longues durées la forme de rotation peut paraître **compressée** sur l’axe temps.  
 - **Courbe en phase** : données repliées modulo **\(P\)** ; en général plus lisible pour la **morphologie** de la rotation sur une longue série.  
 - **Fourier** : la phase est construite pour **aligner la première harmonique** ; les points et le modèle sont repliables en phase de façon cohérente avec \(\alpha\) (déphasage du terme \(k=1\)).  
-- **Manuel** : la phase est basée sur \((t - t_0) \bmod P\) : **\(t_0\)** fixe l’**origine de phase** à 0 sur l’axe « phase ».
+- **Manuel** : la phase est basée sur \((t - t_0) \bmod P\) : **\(t_0\)** fixe l’**origine de phase** à 0 sur l’axe « phase ».  
+- **Modèle DAMIT** : si vous en avez chargé un ([5.2a](#52a-surimpression-modèle-damit)), la courbe orange apparaît **uniquement** sur ce graphique de phase, avec le même abscisse **phase 0–1** que les observations.
 
 ### 5.3 Onglet Publication (jeu validé, S-ALCDEF)
 
