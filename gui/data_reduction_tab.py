@@ -14,6 +14,15 @@ from astropy.visualization import ZScaleInterval
 from scipy.ndimage import maximum_filter
 
 from core.image_processor import ImageProcessor, PipelineControl
+from core.transformation_coefficients import (
+    REFERENCE_BAND_CHOICES,
+    append_coefficient_record,
+    compute_instrumental_and_catalog,
+    fit_transformation,
+    query_ebv_irsa_for_fits_center,
+    read_obs_filter_from_header,
+    transformation_storage_dir,
+)
 from gui.asteroid_photometry_tab import estimate_fwhm_marginal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -43,6 +52,14 @@ class CCDProcGUI:
         self._progress_monotone = False
         self.resize_width_var = tk.StringVar(value="1024")
         self.resize_height_var = tk.StringVar(value="1024")
+        self.viewer_current_fits_path = None  # mis à jour par la fenêtre de visualisation
+        self._trans_mag_inst = None
+        self._trans_mag_cat = None
+        self._trans_mag_der = None
+        self._trans_slope = None
+        self._trans_intercept = None
+        self._trans_rms = None
+        self._trans_n_fit = None
         self.create_widgets()
         self._start_ui_queue_poller()
 
@@ -215,16 +232,18 @@ class CCDProcGUI:
         ).pack(pady=2, padx=5, fill="x")
 
         # ============================================================
-        # LOGS & PROGRESSION (Panneau Droit)
+        # COEFFICIENTS DE TRANSFORMATION + LOGS (Panneau Droit)
         # ============================================================
+        self._build_transformation_coefficients_panel(right_frame)
+
         log_label = ttk.Label(
             right_frame,
             text="📜 Journal des événements",
             font=("Arial", 10, "bold"),
         )
-        log_label.pack(fill=tk.X)
+        log_label.pack(fill=tk.X, pady=(6, 0))
 
-        self.log_text = tk.Text(right_frame, height=15, width=80, state="disabled")
+        self.log_text = tk.Text(right_frame, height=8, width=80, state="disabled")
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
         self.progress_label = ttk.Label(right_frame, text="📊 Progression : 0%")
@@ -331,6 +350,326 @@ class CCDProcGUI:
             logging.warning(message)
         elif level == "error":
             logging.error(message)
+
+    # ------------------------------------------------------------------
+    # Coefficients de transformation photométrique (panneau droit)
+    # ------------------------------------------------------------------
+    def _build_transformation_coefficients_panel(self, parent: ttk.Frame) -> None:
+        self._trans_fits_path_var = tk.StringVar(value="")
+        self._trans_obs_filter_var = tk.StringVar(value="")
+        self._trans_ebv_var = tk.StringVar(value="0.0")
+
+        box = ttk.LabelFrame(
+            parent,
+            text="📐 Coefficients de transformation (Gaia DR3 ; Johnson B,V,Rc via APASS DR9)",
+            padding=6,
+        )
+        box.pack(fill=tk.BOTH, expand=False, pady=(0, 4))
+
+        r0 = ttk.Frame(box)
+        r0.pack(fill=tk.X, pady=2)
+        ttk.Label(r0, text="Image FITS :").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Entry(r0, textvariable=self._trans_fits_path_var, width=52).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
+        )
+        ttk.Button(r0, text="Parcourir…", command=self._trans_browse_fits, width=12).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(r0, text="Depuis visualisation", command=self._trans_use_viewer_fits, width=20).pack(
+            side=tk.LEFT, padx=2
+        )
+
+        r1 = ttk.Frame(box)
+        r1.pack(fill=tk.X, pady=2)
+        ttk.Label(r1, text="Filtre observateur (en-tête FITS) :").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Entry(r1, textvariable=self._trans_obs_filter_var, width=22).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(r1, text="Lire en-tête", command=self._trans_read_filter_from_header, width=14).pack(
+            side=tk.LEFT, padx=2
+        )
+
+        r2 = ttk.Frame(box)
+        r2.pack(fill=tk.X, pady=2)
+        ttk.Label(r2, text="Bande de référence (Gaia ou Johnson APASS) :").pack(side=tk.LEFT, padx=(0, 4))
+        band_labels = [t[0] for t in REFERENCE_BAND_CHOICES]
+        self._trans_ref_combo = ttk.Combobox(
+            r2, values=band_labels, width=36, state="readonly"
+        )
+        self._trans_ref_combo.set(band_labels[0])
+        self._trans_ref_combo.pack(side=tk.LEFT, padx=(0, 12))
+
+        ttk.Label(r2, text="E(B-V) :").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Entry(r2, textvariable=self._trans_ebv_var, width=8).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(
+            r2,
+            text="(rempli auto par IRSA au calcul ; si IRSA échoue : champ si nombre ≥ 0, sinon 0)",
+            font=("Arial", 8),
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=(2, 0))
+
+        r3 = ttk.Frame(box)
+        r3.pack(fill=tk.X, pady=4)
+        ttk.Button(
+            r3, text="Calcul des magnitudes", command=self._trans_run_calculate_thread, width=22
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(r3, text="Afficher la courbe", command=self._trans_show_fit_plot, width=18).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(r3, text="Sauvegarder le coefficient", command=self._trans_save_coefficients, width=24).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Label(
+            r3,
+            text=f"Dossier : {transformation_storage_dir()}",
+            font=("Arial", 8),
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=8)
+
+        cols = ("i", "mi", "mc", "md")
+        self._trans_tree = ttk.Treeview(box, columns=cols, show="headings", height=5)
+        self._trans_tree.heading("i", text="#")
+        self._trans_tree.heading("mi", text="m_inst")
+        self._trans_tree.heading("mc", text="m_cat")
+        self._trans_tree.heading("md", text="m_cat (ext.)")
+        self._trans_tree.column("i", width=36, anchor="center")
+        self._trans_tree.column("mi", width=88, anchor="e")
+        self._trans_tree.column("mc", width=88, anchor="e")
+        self._trans_tree.column("md", width=320, anchor="w")
+        self._trans_tree.pack(fill=tk.BOTH, expand=False, pady=(4, 0))
+
+        self._trans_fit_label = ttk.Label(box, text="Ajustement : —", font=("Arial", 9))
+        self._trans_fit_label.pack(anchor=tk.W, pady=(2, 0))
+
+    def _trans_ref_band_id(self) -> str:
+        label = self._trans_ref_combo.get()
+        for lab, bid in REFERENCE_BAND_CHOICES:
+            if lab == label:
+                return bid
+        return REFERENCE_BAND_CHOICES[0][1]
+
+    def _trans_browse_fits(self):
+        p = filedialog.askopenfilename(
+            parent=self.frame,
+            title="Image FITS pour transformation",
+            filetypes=[("FITS", "*.fits *.fit *.fts"), ("Tous", "*.*")],
+        )
+        if p:
+            self._trans_fits_path_var.set(p)
+
+    def _trans_use_viewer_fits(self):
+        p = self.viewer_current_fits_path
+        if p is None or not Path(p).is_file():
+            self._showwarning(
+                "Visualisation",
+                "Ouvrez la visualisation (section 4) et affichez une image pour définir le FITS courant.",
+            )
+            return
+        self._trans_fits_path_var.set(str(p))
+
+    def _trans_read_filter_from_header(self):
+        path = self._trans_fits_path_var.get().strip()
+        if not path or not Path(path).is_file():
+            self._showwarning("FITS", "Choisissez d'abord un fichier FITS valide.")
+            return
+        try:
+            with fits.open(path, memmap=False) as hdul:
+                h = hdul[0].header
+            f = read_obs_filter_from_header(h)
+            self._trans_obs_filter_var.set(f or "(non trouvé — saisie manuelle)")
+            self.log_message(f"📋 Filtre lu dans l'en-tête : {f or 'aucune clé standard'}")
+        except Exception as e:
+            self._showerror("FITS", str(e))
+
+    def _trans_run_calculate_thread(self):
+        path = self._trans_fits_path_var.get().strip()
+        if not path or not Path(path).is_file():
+            self._showwarning("FITS", "Choisissez une image FITS (ou « Depuis visualisation »).")
+            return
+        ebv_fallback_str = self._trans_ebv_var.get().strip()
+        ref_id = self._trans_ref_band_id()
+        self.log_message("🔭 Calcul magnitudes (E(B-V) IRSA au centre du champ si possible)…")
+
+        def task():
+            ebv_irsa_error = None
+            ebv = 0.0
+            try:
+                ebv_auto, prov = query_ebv_irsa_for_fits_center(Path(path))
+                ebv = float(ebv_auto)
+
+                def _set_ebv_ui():
+                    self._trans_ebv_var.set(f"{ebv:.4f}")
+
+                self._call_on_ui_thread(_set_ebv_ui)
+                self._call_on_ui_thread(
+                    self.log_message,
+                    f"📌 E(B-V) IRSA = {ebv:.4f} — {prov}",
+                )
+            except Exception as ex:
+                ebv_irsa_error = str(ex)
+                raw = (ebv_fallback_str or "").strip().replace(",", ".", 1)
+                if not raw:
+                    ebv = 0.0
+                    ebv_irsa_error = f"{ebv_irsa_error} (champ E(B-V) vide → 0)"
+                else:
+                    try:
+                        v = float(raw)
+                        if v < 0.0:
+                            ebv = 0.0
+                            ebv_irsa_error = f"{ebv_irsa_error} (champ E(B-V) négatif → 0)"
+                        else:
+                            ebv = v
+                    except ValueError:
+                        ebv = 0.0
+                        ebv_irsa_error = f"{ebv_irsa_error} (champ E(B-V) non numérique → 0)"
+
+                def _sync_ebv_field():
+                    self._trans_ebv_var.set(f"{ebv:.4f}")
+
+                self._call_on_ui_thread(_sync_ebv_field)
+                cause = str(ex)
+                if len(cause) > 220:
+                    cause = cause[:217] + "..."
+                journal_line = (
+                    f"⚠️ E(B-V) IRSA indisponible — E(B-V) retenu pour le calcul = {ebv:.4f}. Cause : {cause}"
+                )
+                self._call_on_ui_thread(self.log_message, journal_line, "warning")
+            try:
+                xs, ys, mi, mc, md, fl = compute_instrumental_and_catalog(
+                    Path(path), ref_id, ebv
+                )
+                a, b, rms, n = fit_transformation(mi, md)
+                self._call_on_ui_thread(
+                    self._trans_apply_calculate_result,
+                    path,
+                    xs,
+                    ys,
+                    mi,
+                    mc,
+                    md,
+                    a,
+                    b,
+                    rms,
+                    n,
+                    ebv_irsa_error,
+                    ebv,
+                )
+            except Exception as e:
+                self._call_on_ui_thread(self._showerror, "Transformation", str(e))
+                self._call_on_ui_thread(
+                    self.log_message, f"❌ Transformation : {e}", "error"
+                )
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _trans_apply_calculate_result(
+        self,
+        path,
+        xs,
+        ys,
+        mi,
+        mc,
+        md,
+        a,
+        b,
+        rms,
+        n,
+        ebv_irsa_error=None,
+        ebv_used=0.0,
+    ):
+        self._trans_mag_inst = mi
+        self._trans_mag_cat = mc
+        self._trans_mag_der = md
+        self._trans_slope = a
+        self._trans_intercept = b
+        self._trans_rms = rms
+        self._trans_n_fit = n
+        for item in self._trans_tree.get_children():
+            self._trans_tree.delete(item)
+        if ebv_irsa_error:
+            msg = (ebv_irsa_error[:200] + "…") if len(ebv_irsa_error) > 200 else ebv_irsa_error
+            self._trans_tree.insert(
+                "",
+                0,
+                values=(
+                    "!",
+                    "—",
+                    "—",
+                    f"E(B-V) IRSA : échec. {msg} — E(B-V) effectif au calcul : {float(ebv_used):.4f}.",
+                ),
+            )
+        lim = min(200, len(mi))
+        for i in range(lim):
+            self._trans_tree.insert(
+                "",
+                tk.END,
+                values=(i + 1, f"{mi[i]:.4f}", f"{mc[i]:.4f}", f"{md[i]:.4f}"),
+            )
+        if len(mi) > lim:
+            self._trans_tree.insert("", tk.END, values=("…", f"+{len(mi) - lim}", "", ""))
+        self._trans_fit_label.config(
+            text=f"Ajustement (m_cat,der = a × m_inst + b) : a = {a:.5f}, b = {b:.4f}, RMS = {rms:.4f}, N = {n}"
+        )
+        self.log_message(f"✅ Transformation : {n} points, RMS={rms:.4f} (image {Path(path).name})")
+
+    def _trans_show_fit_plot(self):
+        if self._trans_mag_inst is None or self._trans_slope is None:
+            self._showwarning("Courbe", "Lancez d'abord « Calcul des magnitudes ».")
+            return
+        mi = np.asarray(self._trans_mag_inst, dtype=float)
+        md = np.asarray(self._trans_mag_der, dtype=float)
+        a, b = self._trans_slope, self._trans_intercept
+        win = Toplevel(self.frame)
+        win.title("Transformation photométrique")
+        win.geometry("640x520")
+        fig, ax = plt.subplots(figsize=(6.5, 4.8))
+        ax.scatter(mi, md, s=12, alpha=0.65, label="Étoiles")
+        x0, x1 = float(np.nanmin(mi)), float(np.nanmax(mi))
+        xs = np.linspace(x0, x1, 50)
+        ax.plot(xs, a * xs + b, "r-", lw=2, label=f"Fit : a={a:.4f}, b={b:.3f}")
+        ax.set_xlabel("magnitude instrumentale (−2.5 log₁₀ flux)")
+        ax.set_ylabel("magnitude catalogue (corrigée extinction)")
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
+        ax.set_title(self._trans_ref_combo.get())
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas.draw()
+
+        def _close():
+            plt.close(fig)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _close)
+
+    def _trans_save_coefficients(self):
+        if self._trans_slope is None or self._trans_mag_inst is None:
+            self._showwarning("Sauvegarde", "Lancez d'abord « Calcul des magnitudes ».")
+            return
+        obs = self._trans_obs_filter_var.get().strip() or "UNKNOWN"
+        ref_label = self._trans_ref_combo.get()
+        ref_id = self._trans_ref_band_id()
+        try:
+            ebv = float(self._trans_ebv_var.get().replace(",", "."))
+        except ValueError:
+            ebv = 0.0
+        path = self._trans_fits_path_var.get().strip() or ""
+        try:
+            out = append_coefficient_record(
+                obs,
+                ref_label,
+                ref_id,
+                self._trans_slope,
+                self._trans_intercept,
+                self._trans_rms,
+                self._trans_n_fit,
+                ebv,
+                path,
+            )
+            self.log_message(f"💾 Coefficient enregistré (append) : {out}")
+            self._showinfo("Sauvegarde", f"Ligne ajoutée dans :\n{out}")
+        except Exception as e:
+            self._showerror("Sauvegarde", str(e))
 
     # ------------------------------------------------------------------
     # Sélection des fichiers
@@ -1132,6 +1471,7 @@ class ImageViewerWindow(Toplevel):
         try:
             with fits.open(path) as hdul:
                 self.current_data = hdul[0].data.astype(float)
+            self.parent_tab.viewer_current_fits_path = Path(path)
         except Exception as e:
             logging.warning(f"Impossible de charger {path}: {e}")
             self.current_data = None
