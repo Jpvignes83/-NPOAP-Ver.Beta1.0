@@ -7,8 +7,10 @@ import warnings
 import json
 import traceback
 import webbrowser
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections import defaultdict
 import pickle
 
 # --- 2. BIBLIOTHÈQUES TIERCES GÉNÉRALES ---
@@ -19,8 +21,7 @@ from scipy.spatial import KDTree
 
 # --- 3. INTERFACE GRAPHIQUE (TKINTER) ---
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, Toplevel, simpledialog
-from tkinter import scrolledtext
+from tkinter import ttk, filedialog, messagebox, Toplevel, simpledialog, scrolledtext
 
 # --- 4. VISUALISATION (MATPLOTLIB) ---
 import matplotlib.pyplot as plt
@@ -48,23 +49,55 @@ from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photo
 
 # --- 7. REQUÊTES EXTERNES (ASTROQUERY) ---
 from astroquery.vizier import Vizier
+from astroquery.gaia import Gaia
 from astroquery.jplhorizons import Horizons
 # --- 8. MODULES LOCAUX ---
 import config
 # --- NOUVEAU : Import du module d'astrométrie optimisé ---
-from core.fast_astrometry import FastAstrometrySolver, GaiaCache, smart_aperture_selection, optimized_query_gaia, calculate_astrometric_statistics, open_fits_with_fixed_wcs
-# Tentative d'import CuPy pour GPU
+from core.fast_astrometry import (
+    FastAstrometrySolver,
+    GaiaCache,
+    smart_aperture_selection,
+    optimized_query_gaia,
+    query_gaia_dr2_vizier_box,
+    merge_gaia_dr3_dr2_photometry_field,
+    gaia_box_radius_for_imaging_fov,
+    calculate_astrometric_statistics,
+    open_fits_with_fixed_wcs,
+)
+# Tentative d'import CuPy pour GPU (Exception : ImportError, ou AttributeError si
+# importlib.metadata renvoie des distributions sans metadata — cf. cupy._detect_duplicate_installation)
 try:
-    import cupy as cp
+    import warnings as _warnings_cupy
+    with _warnings_cupy.catch_warnings():
+        _warnings_cupy.filterwarnings("ignore", message=".*CUDA path could not be detected.*", category=UserWarning)
+        import cupy as cp
     HAS_GPU = True
-except ImportError:
+    try:
+        cp.cuda.is_available()
+    except Exception:
+        HAS_GPU = False
+except Exception:
     HAS_GPU = False
+    cp = None
 # Détection KBMOD : exécutée via WSL (pas d'import kbmod sous Windows)
 from utils.wsl_utils import windows_path_to_wsl
 from core.periodogram_tools import run_lomb_scargle
-from core.asteroid_lightcurve_model import light_curve_model, fit_light_curve
+from core.asteroid_lightcurve_model import (
+    fit_harmonic_series_wls,
+    fit_light_curve,
+    light_curve_model,
+)
 from core.asteroid_shape_model import load_shape
-from utils.logging_handler import TextHandler as UILogTextHandler
+from core.alcdef_export import (
+    LIGHT_CURVE_MAGNITUDE_HEADER,
+    ReportMeta,
+    build_simple_alcdef_text,
+    build_submission_report_lines,
+    load_light_curve_txt,
+    relative_flux_to_differential_magnitude,
+)
+from core.asteroid_lc_detrend import detrend_asteroid_lc, list_detrend_methods
 # --- CONFIGURATION ---
 warnings.filterwarnings("ignore", category=AstropyWarning)
 logger = logging.getLogger("AsteroidPhotometryTab")
@@ -73,6 +106,38 @@ Vizier.server = 'http://vizier.cfa.harvard.edu/'
 # =============================================================================
 # FONCTIONS UTILITAIRES (MATHS & ASTROMÉTRIE)
 # =============================================================================
+def _dataframe_to_lc_series(df):
+    """
+    Extrait (time, flux, flux_err) depuis un CSV photométrie NPOAP.
+    Colonnes flux : rel_flux_T1_fn (prioritaire), flux, rel_flux ; sinon mag_T1_fn (+ mag_err_T1_fn)
+    convertie en flux linéaire (f = 10**(-0.4*m)) pour la modélisation.
+    """
+    time_col = next((c for c in ["JD-UTC", "JD_UTC", "time", "Time"] if c in df.columns), None)
+    if time_col is None:
+        raise ValueError("CSV : colonne temps absente (JD-UTC, time, …).")
+    t = np.asarray(df[time_col], dtype=float)
+    flux_col = next((c for c in ["rel_flux_T1_fn", "flux", "rel_flux"] if c in df.columns), None)
+    if flux_col is not None:
+        f = np.asarray(df[flux_col], dtype=float)
+        err_col = next((c for c in ["rel_flux_err_T1", "flux_err", "err"] if c in df.columns), None)
+        fe = np.asarray(df[err_col], dtype=float) if err_col else None
+        return t, f, fe
+    if "mag_T1_fn" in df.columns:
+        mag = np.asarray(df["mag_T1_fn"], dtype=float)
+        f = np.full_like(mag, np.nan, dtype=float)
+        ok = np.isfinite(mag)
+        f[ok] = np.power(10.0, -0.4 * mag[ok])
+        if "mag_err_T1_fn" in df.columns:
+            sm = np.asarray(df["mag_err_T1_fn"], dtype=float)
+            fe = np.full_like(f, np.nan, dtype=float)
+            o2 = ok & np.isfinite(sm) & np.isfinite(f) & (f > 0)
+            fe[o2] = f[o2] * (np.log(10.0) * 0.4) * np.abs(sm[o2])
+        else:
+            fe = None
+        return t, f, fe
+    raise ValueError("CSV : ni rel_flux_T1_fn (ou flux) ni mag_T1_fn.")
+
+
 def _compute_fov_center_and_radius_for_astrometry(wcs, shape):
     ny, nx = shape
     px = np.array([0, nx, 0, nx])
@@ -165,36 +230,13 @@ def estimate_fwhm_marginal(data, x, y, box_size=25):
 def calculate_aperture_radii_from_fwhm(fwhm, default_fwhm=4.0):
     """
     Calcule les valeurs de départ des ouvertures photométriques basées sur le FWHM.
-    
-    Paramètres:
-    -----------
-    fwhm : float ou None
-        Valeur du FWHM en pixels. Si None ou invalide, utilise default_fwhm.
-    default_fwhm : float
-        Valeur par défaut du FWHM si l'estimation échoue (défaut: 4.0 pixels).
-    
-    Retourne:
-    --------
-    tuple : (r_ap, r_in, r_out)
-        Rayons d'ouverture : aperture, inner annulus, outer annulus (en pixels)
+    Délègue à ``core.photometry_apertures`` (même règle que la photométrie batch astéroïdes).
     """
-    # Utiliser la valeur par défaut si FWHM invalide
-    if fwhm is None or not np.isfinite(fwhm) or fwhm < 2.0 or fwhm > 8.0:
-        logger.debug(f"FWHM invalide ({fwhm}), utilisation valeur par défaut {default_fwhm}")
-        fwhm = default_fwhm
-    
-    # Calcul des apertures avec limites raisonnables (même logique que pour exoplanètes)
-    r_ap = max(2.0, min(round(2.0*fwhm, 1), 20.0))  # Ouverture = FWHM × 2
-    r_in = max(4.0, min(round(2.5*fwhm, 1),40.0))  # Entre 4 et 25 pixels
-    r_out = max(6.0, min(round(3.5*fwhm, 1), 50.0))  # Entre 6 et 35 pixels
-    
-    # Vérification de cohérence : r_in > r_ap et r_out > r_in
-    if r_in <= r_ap:
-        r_in = r_ap + 2.0
-    if r_out <= r_in:
-        r_out = r_in + 2.0
-    
-    return r_ap, r_in, r_out
+    from core.photometry_apertures import aperture_radii_from_fwhm_pixels
+
+    return aperture_radii_from_fwhm_pixels(
+        fwhm, default_fwhm=default_fwhm, max_input_fwhm=8.0
+    )
 
 def _query_gaia_for_astrometry(center_coord, search_radius, mag_limit):
     logger.debug(f"Requête Gaia via Vizier avec box search (workaround timeout CIRCLE)")
@@ -402,6 +444,11 @@ def _interpolate_target_position(eph_table, target_jd):
         return SkyCoord(ra=ra_interp * u.deg, dec=dec_interp * u.deg, frame='icrs')
 
 class AsteroidPhotometryTab:
+    # Rayons Gaia (″) : cône TAP + matching catalogue champ (WCS / archive qui limite les requêtes rapprochées).
+    GAIA_MAG_TAP_CONE_ARCSEC = 18.0
+    GAIA_MAG_FIELD_MATCH_ARCSEC = 15.0
+    GAIA_MAG_PERSTAR_CONE_ARCSEC = 18.0
+
     def __init__(self, parent):
         self.frame = ttk.Frame(parent)
         self.frame.pack(fill=tk.BOTH, expand=True)
@@ -414,6 +461,8 @@ class AsteroidPhotometryTab:
         self.current_header = None
         self.current_data = None
         self.ephemeris_data = None
+        self._eph_traj_sky = None  # SkyCoord (trajectoire ciel) pour tracé sur la 1re image
+        self._ephemeris_from_json_archive = False  # True si ephemeris_data vient de *_observations.json
         self.wcs = None
         self.current_selections = []
         self.image_times = []
@@ -426,6 +475,11 @@ class AsteroidPhotometryTab:
         self.last_t1_px_for_fwhm = None  # Dernière position T1 utilisée pour FWHM
         self.manual_t1_anchor_first = None  # {"jd": float, "ra_deg": float, "dec_deg": float}
         self.manual_t1_anchor_last = None   # {"jd": float, "ra_deg": float, "dec_deg": float}
+
+        # Zoom : conserver le même cadrage lors du défilement des images
+        self.keep_zoom_across_images = True
+        self.keep_zoom_ui_var = tk.BooleanVar(value=True)
+        self._last_zoom_limits = None  # ((x_min, x_max), (y_min, y_max))
 
         # Cache Gaia persistant
         self.gaia_cache = GaiaCache()
@@ -468,72 +522,101 @@ class AsteroidPhotometryTab:
         self.photometry_gaia_mag_cache = {}
         self.photometry_filter_var = tk.StringVar(value="G")
         self.photometry_delta_var = tk.DoubleVar(value=0.0)
-        
-        # Console de logs live dans l'onglet
-        self.log_text_widget = None
-        self.log_text_handler = None
-        self.log_process_depth = 0
 
+        # Modélisation courbe de lumière (panneau intégré en haut à droite)
+        self.lc_data = {"time": None, "flux": None, "flux_err": None}
+        self.lc_raw_data = {"time": None, "flux": None, "flux_err": None}
+        # Jeu figé pour l’onglet Publication (ALCDEF) après « Valider pour publication »
+        self.lc_publication_snapshot = None
+        self.lc_period_best = {"value": None}
+        self.lc_fit_result = {"P": None, "t0": None, "A": None, "F0": None}
+        self.lc_canvas_per = None
+        self.lc_canvas_lc = None
+        self._lc_plot_resize_after_id = None
+        self._lc_plot_canvas_wh = (0, 0)
+        # Prévisualisation FITS (sous-onglet Photométrie uniquement)
+        self.photo_fig = None
+        self.photo_ax = None
+        self.photo_canvas = None
+        
         self.setup_gui()
 
     def setup_gui(self):
         ttk.Label(self.frame, text="Photométrie d'astéroïdes", font=("Helvetica", 12, "bold")).pack(pady=5)
+        notebook = ttk.Notebook(self.frame)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
-        # Conteneur gauche : Canvas + scrollbar pour zone de contrôle défilante
-        left_container = ttk.Frame(self.frame)
-        left_container.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0), pady=10)
+        astrometry_tab = ttk.Frame(notebook)
+        photometry_tab = ttk.Frame(notebook)
+        publication_tab = ttk.Frame(notebook)
+        notebook.add(astrometry_tab, text="1. Astrométrie")
+        notebook.add(photometry_tab, text="2. Photométrie")
+        notebook.add(publication_tab, text="3. Publication")
+        self._asteroid_workflow_notebook = notebook
+        self._build_publication_panel(publication_tab)
 
-        control_canvas = tk.Canvas(left_container, highlightthickness=0)
-        control_scrollbar = ttk.Scrollbar(left_container)
+        def _create_scrollable_controls(host, left_min_width_px=None):
+            host.columnconfigure(0, weight=0)
+            host.columnconfigure(1, weight=1)
+            host.rowconfigure(0, weight=1)
 
-        control_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        control_canvas.pack(side=tk.LEFT, fill=tk.Y)
+            left_container = ttk.Frame(host)
+            left_container.grid(row=0, column=0, sticky="ns", padx=(10, 4), pady=10)
 
-        control_canvas.config(yscrollcommand=control_scrollbar.set)
-        control_scrollbar.config(command=control_canvas.yview)
+            control_canvas = tk.Canvas(left_container, highlightthickness=0)
+            if left_min_width_px:
+                control_canvas.configure(width=int(left_min_width_px))
+            control_scrollbar = ttk.Scrollbar(left_container)
+            control_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            control_canvas.pack(side=tk.LEFT, fill=tk.Y)
+            control_canvas.config(yscrollcommand=control_scrollbar.set)
+            control_scrollbar.config(command=control_canvas.yview)
 
-        # Cadre intérieur (contenu défilant) ; parent = canvas pour create_window
-        control_frame = ttk.Frame(control_canvas)
-        canvas_window = control_canvas.create_window(0, 0, window=control_frame, anchor="nw")
+            control_frame = ttk.Frame(control_canvas)
+            canvas_window = control_canvas.create_window(0, 0, window=control_frame, anchor="nw")
 
-        def _on_control_frame_configure(event):
-            control_canvas.configure(scrollregion=control_canvas.bbox("all"))
+            def _on_control_frame_configure(event):
+                control_canvas.configure(scrollregion=control_canvas.bbox("all"))
 
-        def _on_canvas_configure(event):
-            control_canvas.itemconfig(canvas_window, width=event.width)
+            def _on_canvas_configure(event):
+                control_canvas.itemconfig(canvas_window, width=event.width)
 
-        control_frame.bind("<Configure>", _on_control_frame_configure)
-        control_canvas.bind("<Configure>", _on_canvas_configure)
+            def _on_mousewheel(event):
+                control_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        def _on_mousewheel(event):
-            control_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            def _bind_mousewheel(event):
+                control_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        def _bind_mousewheel(event):
-            control_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            def _unbind_mousewheel(event):
+                control_canvas.unbind_all("<MouseWheel>")
 
-        def _unbind_mousewheel(event):
-            control_canvas.unbind_all("<MouseWheel>")
+            control_frame.bind("<Configure>", _on_control_frame_configure)
+            control_canvas.bind("<Configure>", _on_canvas_configure)
+            control_canvas.bind("<Enter>", _bind_mousewheel)
+            control_canvas.bind("<Leave>", _unbind_mousewheel)
+            control_frame.bind("<Enter>", _bind_mousewheel)
+            control_frame.bind("<Leave>", _unbind_mousewheel)
 
-        control_canvas.bind("<Enter>", _bind_mousewheel)
-        control_canvas.bind("<Leave>", _unbind_mousewheel)
-        control_frame.bind("<Enter>", _bind_mousewheel)
-        control_frame.bind("<Leave>", _unbind_mousewheel)
+            display_frame = ttk.Frame(host)
+            display_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 10), pady=10)
+            return control_frame, display_frame
 
-        display_frame = ttk.Frame(self.frame)
-        display_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Zone de droite en 2 panneaux (50/50) : visualisation + log live
-        right_paned = tk.PanedWindow(display_frame, orient=tk.VERTICAL, sashrelief=tk.RAISED, sashwidth=6)
-        right_paned.pack(fill=tk.BOTH, expand=True)
-        viz_frame = ttk.Frame(right_paned)
-        log_frame = ttk.LabelFrame(right_paned, text="Journal du processus")
-        right_paned.add(viz_frame, minsize=220)
-        right_paned.add(log_frame, minsize=180)
+        ast_control_frame, ast_display_frame = _create_scrollable_controls(astrometry_tab)
+        # Colonne gauche ~40 % plus large que la base 300 px (~390 px) pour l’onglet Photométrie
+        _photo_left_w = int(300 * 1.3)
+        photo_control_frame, photo_display_frame = _create_scrollable_controls(
+            photometry_tab, left_min_width_px=_photo_left_w
+        )
+
+        # Panneau d'analyse de courbes de lumière dans l'onglet Photométrie (zone droite).
+        viz_frame = ttk.Frame(photo_display_frame)
+        viz_frame.pack(fill=tk.BOTH, expand=True)
+        self._build_lightcurve_modeling_panel(viz_frame)
 
        # ttk.Button(control_frame, text="📁 Charger images", command=self.load_folder).pack(fill=tk.X, pady=2)
 
         # Navigation entre images
-        nav_frame = ttk.LabelFrame(control_frame, text="Navigation Images")
+        nav_frame = ttk.LabelFrame(ast_control_frame, text="Navigation Images")
         nav_frame.pack(fill=tk.X, pady=2, ipady=2)
         ttk.Button(nav_frame, text="📁 Charger images", command=self.load_folder).pack(fill=tk.X, pady=1)
         
@@ -577,7 +660,25 @@ class AsteroidPhotometryTab:
         self.image_info_label = ttk.Label(nav_frame, text="Aucune image chargée", foreground="gray")
         self.image_info_label.pack(pady=1)
 
-        id_obs_frame = ttk.Frame(control_frame)
+        traj_json_ast_frame = ttk.LabelFrame(
+            ast_control_frame,
+            text="Trajectoire (positions mesurées)",
+        )
+        traj_json_ast_frame.pack(fill=tk.X, pady=(2, 4), ipady=2)
+        ttk.Label(
+            traj_json_ast_frame,
+            text="Archive JSON (rapports/*_observations.json) : interpolation RA/Dec par image.",
+            font=("Helvetica", 8),
+            foreground="gray",
+            wraplength=268,
+        ).pack(anchor="w", padx=4, pady=(0, 2))
+        ttk.Button(
+            traj_json_ast_frame,
+            text="📂 Charger trajectoire depuis JSON…",
+            command=self.load_trajectory_from_observations_json,
+        ).pack(fill=tk.X, padx=4, pady=2)
+
+        id_obs_frame = ttk.Frame(ast_control_frame)
         id_obs_frame.pack(pady=2)
 
         f1 = ttk.Frame(id_obs_frame); f1.pack(side=tk.LEFT, padx=2)
@@ -589,7 +690,7 @@ class AsteroidPhotometryTab:
         ttk.Entry(f2, width=6, textvariable=self.observatory_code_var).pack()
 
         # Frame pour le pas d'éphémérides avec explication
-        eph_step_frame = ttk.LabelFrame(control_frame, text="Pas Éphémérides")
+        eph_step_frame = ttk.LabelFrame(ast_control_frame, text="Pas Éphémérides")
         eph_step_frame.pack(fill=tk.X, pady=2, ipady=2)
         
         step_entry_frame = ttk.Frame(eph_step_frame)
@@ -609,9 +710,9 @@ class AsteroidPhotometryTab:
                                foreground="blue", justify=tk.LEFT, wraplength=250)
         help_label.pack(padx=5, pady=1, anchor="w")
 
-        ttk.Button(control_frame, text="🔭 Récupérer Éphémérides", command=self.fetch_ephemeris).pack(fill=tk.X, pady=1)
+        ttk.Button(ast_control_frame, text="🔭 Récupérer Éphémérides", command=self.fetch_ephemeris).pack(fill=tk.X, pady=1)
 
-        ast_frame = ttk.LabelFrame(control_frame, text="Paramètres Astrométrie")
+        ast_frame = ttk.LabelFrame(ast_control_frame, text="Paramètres Astrométrie")
         ast_frame.pack(fill=tk.X, pady=2, ipady=2)
 
         params = [("FWHM [px]", self.fwhm_var), ("Seuil [σ]", self.threshold_sigma_var),
@@ -670,7 +771,25 @@ class AsteroidPhotometryTab:
         ttk.Button(ast_frame, text="🧭 Batch Astrométrie (Thread)", command=self._batch_astrometry_worker).grid(row=8, column=0, columnspan=2, pady=2)
         ttk.Button(ast_frame, text="📋 Tableau ZA (6 ouvertures)", command=self.open_zero_aperture_table).grid(row=9, column=0, columnspan=2, pady=2)
 
-        photo_frame = ttk.LabelFrame(control_frame, text="Photométrie d'Ouverture")
+        traj_json_photo_frame = ttk.LabelFrame(
+            photo_control_frame,
+            text="Trajectoire (positions mesurées)",
+        )
+        traj_json_photo_frame.pack(fill=tk.X, pady=(0, 4), ipady=2)
+        ttk.Label(
+            traj_json_photo_frame,
+            text="Même archive que l’astrométrie : T1 interpolé par JD sur la série.",
+            font=("Helvetica", 8),
+            foreground="gray",
+            wraplength=320,
+        ).pack(anchor="w", padx=4, pady=(0, 2))
+        ttk.Button(
+            traj_json_photo_frame,
+            text="📂 Charger trajectoire depuis JSON…",
+            command=self.load_trajectory_from_observations_json,
+        ).pack(fill=tk.X, padx=4, pady=2)
+
+        photo_frame = ttk.LabelFrame(photo_control_frame, text="Photométrie d'Ouverture")
         photo_frame.pack(fill=tk.X, pady=2, ipady=2)
 
         # Réglages photométrie Gaia intégrés en tête du cadre Photométrie d'Ouverture
@@ -691,41 +810,113 @@ class AsteroidPhotometryTab:
         self.photo_button = ttk.Button(photo_frame, text="⭕ SET-UP PHOTOMÉTRIE ", command=self.run_photometry_setup)
         self.photo_button.grid(row=3, column=0, columnspan=4, pady=2)
 
-        self.photo_single_button = ttk.Button(
-            photo_frame,
-            text="📸 PHOTOMÉTRIE IMAGE COURANTE (Comètes)",
-            command=self.run_photometry_single_image
-        )
-        self.photo_single_button.grid(row=4, column=0, columnspan=4, pady=2)
-
         self.photo_batch_button = ttk.Button(
             photo_frame,
             text="📊 PHOTOMÉTRIE BATCH (Astéroïdes)",
             command=self.run_photometry_batch
         )
-        self.photo_batch_button.grid(row=5, column=0, columnspan=4, pady=2)
+        self.photo_batch_button.grid(row=4, column=0, columnspan=4, pady=2)
+
+        ttk.Button(
+            photo_frame,
+            text="🔭 Assistant comparateurs (Gaia + ouvertures)",
+            command=self.launch_selection_window,
+        ).grid(row=5, column=0, columnspan=4, pady=2)
+
+        photo_fits_frame = ttk.LabelFrame(
+            photo_control_frame, text="Visualisation image (synchronisée)", padding=4
+        )
+        photo_fits_frame.pack(fill=tk.X, pady=(6, 4))
+        photo_canvas_holder = ttk.Frame(photo_fits_frame)
+        photo_canvas_holder.pack(fill=tk.X)
+        self.photo_fig, self.photo_ax = plt.subplots(figsize=(4.6, 3.45))
+        self.photo_fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.98)
+        self.photo_canvas = FigureCanvasTkAgg(self.photo_fig, master=photo_canvas_holder)
+        self.photo_canvas.get_tk_widget().pack(fill=tk.X, expand=True)
+        self.photo_canvas.mpl_connect("button_press_event", self.on_image_click)
+        self.photo_canvas.mpl_connect("scroll_event", self._on_photo_scroll_view)
+
+        def _sync_keep_zoom_from_ui(*_):
+            self.keep_zoom_across_images = bool(self.keep_zoom_ui_var.get())
+
+        self.keep_zoom_ui_var.trace_add("write", _sync_keep_zoom_from_ui)
+
+        photo_nav = ttk.LabelFrame(
+            photo_fits_frame,
+            text="Navigation série & photométrie image par image",
+            padding=(4, 4),
+        )
+        photo_nav.pack(fill=tk.X, pady=(6, 0))
+        photo_nav_btns = ttk.Frame(photo_nav)
+        photo_nav_btns.pack(fill=tk.X)
+        ttk.Button(photo_nav_btns, text="⏮ 1ère", width=7, command=self.load_first_image).pack(
+            side=tk.LEFT, padx=2, pady=1
+        )
+        ttk.Button(photo_nav_btns, text="◀", width=4, command=self.load_previous_image).pack(
+            side=tk.LEFT, padx=2, pady=1
+        )
+        ttk.Button(photo_nav_btns, text="▶", width=4, command=self.load_next_image).pack(
+            side=tk.LEFT, padx=2, pady=1
+        )
+        ttk.Button(photo_nav_btns, text="⏭ Fin", width=7, command=self.load_last_image).pack(
+            side=tk.LEFT, padx=2, pady=1
+        )
+        ttk.Separator(photo_nav_btns, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=4, pady=2
+        )
+        ttk.Button(
+            photo_nav_btns,
+            text="Photométrie image",
+            command=self.run_photometry_single_image,
+        ).pack(side=tk.LEFT, padx=2, pady=1)
+        photo_nav_zoom = ttk.Frame(photo_nav)
+        photo_nav_zoom.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(photo_nav_zoom, text="Zoom :", font=("Helvetica", 8)).pack(
+            side=tk.LEFT, padx=(0, 2)
+        )
+        ttk.Button(
+            photo_nav_zoom,
+            text="−",
+            width=3,
+            command=lambda: self._zoom_image_views(1.0 / 1.25),
+        ).pack(side=tk.LEFT, padx=1, pady=1)
+        ttk.Button(
+            photo_nav_zoom,
+            text="+",
+            width=3,
+            command=lambda: self._zoom_image_views(1.25),
+        ).pack(side=tk.LEFT, padx=1, pady=1)
+        ttk.Button(
+            photo_nav_zoom,
+            text="Plein cadre",
+            command=self._zoom_image_views_fit,
+        ).pack(side=tk.LEFT, padx=(4, 0), pady=1)
+        photo_nav_opts = ttk.Frame(photo_nav)
+        photo_nav_opts.pack(fill=tk.X, pady=(4, 0))
+        ttk.Checkbutton(
+            photo_nav_opts,
+            text="Garder le zoom entre images",
+            variable=self.keep_zoom_ui_var,
+        ).pack(side=tk.LEFT, padx=2)
+        self.photo_view_nav_label = ttk.Label(
+            photo_nav,
+            text="—",
+            font=("Helvetica", 8),
+            foreground="gray",
+            wraplength=320,
+            justify=tk.LEFT,
+        )
+        self.photo_view_nav_label.pack(fill=tk.X, padx=2, pady=(4, 0), anchor="w")
 
         # Bouton KBMOD sorti du sous-cadre Photométrie d'Ouverture, placé juste en dessous
         self.kbmod_button = ttk.Button(
-            control_frame, text="🔍 Détection KBMOD (via WSL)",
+            photo_control_frame, text="🔍 Détection KBMOD (via WSL)",
             command=self._open_kbmod_wsl_detection_dialog
         )
         self.kbmod_button.pack(fill=tk.X, pady=1)
 
-        # Modélisation & Inversion (courbe de lumière → période, amplitude, etc.)
-        model_frame = ttk.LabelFrame(control_frame, text="Modélisation & Inversion")
-        model_frame.pack(fill=tk.X, pady=2, ipady=2)
-        ttk.Label(
-            model_frame, text="Courbe de lumière → modèle rotation + ajustement",
-            font=("Helvetica", 8), foreground="gray"
-        ).pack(anchor="w", padx=5, pady=0)
-        ttk.Button(
-            model_frame, text="📈 Modélisation & Inversion",
-            command=self._open_lightcurve_modeling_window
-        ).pack(fill=tk.X, padx=5, pady=2)
-
         # Forme 3D (DAMIT : inversion de courbes de lumière → modèle polyédrique)
-        damit_frame = ttk.LabelFrame(control_frame, text="Forme (DAMIT)")
+        damit_frame = ttk.LabelFrame(photo_control_frame, text="Forme (DAMIT)")
         damit_frame.pack(fill=tk.X, pady=2, ipady=2)
         ttk.Label(
             damit_frame,
@@ -749,90 +940,37 @@ class AsteroidPhotometryTab:
             command=self._open_damit_shape_window
         ).pack(fill=tk.X, padx=5, pady=2)
 
-        # Visualisation (fenêtre agrandie)
-        self.fig, self.ax = plt.subplots(figsize=(12, 9))  # taille plus grande pour la visualisation
-        self.canvas = FigureCanvasTkAgg(self.fig, master=viz_frame)
-        self.toolbar = NavigationToolbar2Tk(self.canvas, viz_frame)
-        self.toolbar.update()
+        # Astrométrie : visualisation images FITS incrustée dans la zone droite de l'onglet 1.
+        fits_view_frame = ttk.LabelFrame(ast_display_frame, text="Visualisation images FITS", padding=4)
+        fits_view_frame.pack(fill=tk.BOTH, expand=True)
+        fits_canvas_frame = ttk.Frame(fits_view_frame)
+        fits_toolbar_frame = ttk.Frame(fits_view_frame)
+        fits_view_frame.columnconfigure(0, weight=1)
+        fits_view_frame.rowconfigure(0, weight=1)
+        fits_canvas_frame.grid(row=0, column=0, sticky="nsew")
+        fits_toolbar_frame.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.fig, self.ax = plt.subplots(figsize=(12, 9))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=fits_canvas_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Console de log live (zone libérée sous la visualisation)
-        self.log_text_widget = scrolledtext.ScrolledText(
-            log_frame,
-            wrap=tk.WORD,
-            height=12,
-            state="disabled",
-            font=("Consolas", 9),
-        )
-        self.log_text_widget.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        self._append_log_panel_message("Journal inactif. Il s'active uniquement pendant astrométrie/photométrie.")
-        
-        # Positionner le séparateur vers 50% de la hauteur
-        def _place_half_sash():
-            try:
-                total_h = max(display_frame.winfo_height(), 1)
-                right_paned.sash_place(0, 0, int(total_h * 0.5))
-            except Exception:
-                pass
-        display_frame.after(150, _place_half_sash)
-        
-        # Connexion du gestionnaire de clic pour sélectionner T1
+        self.toolbar = NavigationToolbar2Tk(self.canvas, fits_toolbar_frame, pack_toolbar=False)
+        self.toolbar.update()
+        # Barre d'outils visible (fallback robuste): commandes Matplotlib sous la visualisation.
+        toolbar_btns = ttk.Frame(fits_toolbar_frame)
+        toolbar_btns.pack(fill=tk.X)
+        ttk.Button(toolbar_btns, text="Accueil", command=self.toolbar.home, width=9).pack(side=tk.LEFT, padx=2, pady=1)
+        ttk.Button(toolbar_btns, text="Retour", command=self.toolbar.back, width=8).pack(side=tk.LEFT, padx=2, pady=1)
+        ttk.Button(toolbar_btns, text="Avancer", command=self.toolbar.forward, width=8).pack(side=tk.LEFT, padx=2, pady=1)
+        ttk.Button(toolbar_btns, text="Pan", command=self.toolbar.pan, width=7).pack(side=tk.LEFT, padx=2, pady=1)
+        ttk.Button(toolbar_btns, text="Zoom", command=self.toolbar.zoom, width=7).pack(side=tk.LEFT, padx=2, pady=1)
+        ttk.Button(toolbar_btns, text="Sauver", command=self.toolbar.save_figure, width=8).pack(side=tk.LEFT, padx=2, pady=1)
         self.canvas.mpl_connect("button_press_event", self.on_image_click)
-    
-    def _attach_live_log_view(self):
-        """Branche le logger racine sur la console de logs de l'onglet."""
-        if not self.log_text_widget or self.log_text_handler is not None:
-            return
-        try:
-            handler = UILogTextHandler(self.log_text_widget)
-            handler.setLevel(logging.INFO)
-            handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-            logging.getLogger().addHandler(handler)
-            self.log_text_handler = handler
-            self.frame.bind("<Destroy>", self._on_tab_destroy, add="+")
-        except Exception as e:
-            logger.debug(f"Impossible d'attacher la vue log live: {e}")
-    
-    def _append_log_panel_message(self, msg: str):
-        """Ajoute un message local dans le panneau de log (sans logger global)."""
-        if not self.log_text_widget:
-            return
-        try:
-            self.log_text_widget.configure(state="normal")
-            self.log_text_widget.insert("end", msg + "\n")
-            self.log_text_widget.see("end")
-            self.log_text_widget.configure(state="disabled")
-        except Exception:
-            pass
-    
+
     def _start_process_log_capture(self, process_label: str):
-        """Active la capture live uniquement pendant les traitements demandés."""
-        if self.log_process_depth == 0:
-            self._attach_live_log_view()
-            self._append_log_panel_message(f"=== Début {process_label} ===")
-        self.log_process_depth += 1
-    
+        """Réservé (ancien journal intégré supprimé) ; les logs restent via le logger standard."""
+        pass
+
     def _stop_process_log_capture(self, process_label: str):
-        """Désactive la capture live quand le dernier traitement se termine."""
-        if self.log_process_depth > 0:
-            self.log_process_depth -= 1
-        if self.log_process_depth == 0:
-            self._append_log_panel_message(f"=== Fin {process_label} ===")
-            self._detach_live_log_view()
-    
-    def _on_tab_destroy(self, event):
-        """Nettoie le handler de log quand l'onglet est détruit."""
-        if event.widget is self.frame:
-            self._detach_live_log_view()
-    
-    def _detach_live_log_view(self):
-        if self.log_text_handler is None:
-            return
-        try:
-            logging.getLogger().removeHandler(self.log_text_handler)
-        except Exception:
-            pass
-        self.log_text_handler = None
+        pass
 
     def load_folder(self):
         from tkinter import filedialog
@@ -840,6 +978,9 @@ class AsteroidPhotometryTab:
         if not directory: return
         
         self.directory = directory
+        self.ephemeris_data = None  # Nouveau dossier : ne pas réutiliser Horizons/JSON d’une autre série
+        self._eph_traj_sky = None  # Éphéméride précédente invalide pour un autre champ
+        self._ephemeris_from_json_archive = False
         self.image_files = sorted([str(f) for f in Path(directory).glob("*.fits")])
         logger.info(f"Dossier : {len(self.image_files)} fichiers trouvés.")
         if self.image_files: 
@@ -848,6 +989,7 @@ class AsteroidPhotometryTab:
             self.current_image_index = 0
             self.load_image(self.image_files[0])
             self.update_image_info()
+            self.frame.after(200, lambda: self.refresh_lightcurve_graphs(silent=True))
 
     def load_image(self, path):
         logger.info(f"Chargement image : {Path(path).name}")
@@ -864,13 +1006,74 @@ class AsteroidPhotometryTab:
             self.current_header = hdul[0].header
             self.current_data = hdul[0].data.astype(float)
             self.wcs = WCS(self.current_header)
-        
-        # Essayer de positionner T1 automatiquement depuis les éphémérides si disponibles
-        # Sinon, réinitialiser T1 pour la nouvelle image (sera défini par clic gauche)
+
+        # Réinitialiser T1
         self.target_t1_px = None
         self.target_t1_sky = None
-        
-        # Mode manuel : ne pas positionner T1 automatiquement depuis éphémérides
+
+        # Essayer de positionner T1 automatiquement à partir de OBJCTRA / OBJCTDEC (ou RA/DEC).
+        try:
+            if self.wcs is not None and self.current_header is not None:
+                ra_obj = self.current_header.get('OBJCTRA') or self.current_header.get('RA')
+                dec_obj = self.current_header.get('OBJCTDEC') or self.current_header.get('DEC')
+                if ra_obj and dec_obj:
+                    ra_txt = str(ra_obj).strip().replace(",", ".")
+                    dec_txt = str(dec_obj).strip().replace(",", ".")
+
+                    def _space_sexa_to_colon(s: str) -> str:
+                        """Ex. '06 57 57' ou '+18 30 45' -> '06:57:57' / '+18:30:45' pour SkyCoord."""
+                        t = s.strip()
+                        if not t:
+                            return t
+                        parts = t.split()
+                        if len(parts) >= 3:
+                            return ":".join(parts)
+                        return t
+
+                    sexa_tokens = (":", "h", "d", "m", "s")
+                    ra_sexa = any(ch in ra_txt.lower() for ch in sexa_tokens) or (
+                        len(ra_txt.split()) >= 3 and not re.fullmatch(r"[\+\-]?[\d\.]+", ra_txt)
+                    )
+                    dec_sexa = any(ch in dec_txt.lower() for ch in sexa_tokens) or (
+                        len(dec_txt.split()) >= 3 and not re.fullmatch(r"[\+\-]?[\d\.]+", dec_txt)
+                    )
+
+                    if ra_sexa or dec_sexa:
+                        ra_parse = _space_sexa_to_colon(ra_txt) if ra_sexa else ra_txt
+                        dec_parse = _space_sexa_to_colon(dec_txt) if dec_sexa else dec_txt
+                        target_sky = SkyCoord(
+                            ra=ra_parse, dec=dec_parse, unit=(u.hourangle, u.deg), frame="icrs"
+                        )
+                    else:
+                        ra_num = float(ra_txt)
+                        dec_num = float(dec_txt)
+                        if abs(ra_num) > 24.0:
+                            target_sky = SkyCoord(ra=ra_num * u.deg, dec=dec_num * u.deg, frame="icrs")
+                        else:
+                            try:
+                                target_sky = SkyCoord(
+                                    ra=ra_num * u.hourangle, dec=dec_num * u.deg, frame="icrs"
+                                )
+                            except Exception:
+                                target_sky = SkyCoord(ra=ra_num * u.deg, dec=dec_num * u.deg, frame="icrs")
+
+                    tx, ty = self.wcs.world_to_pixel(target_sky)
+                    ny, nx = self.current_data.shape
+                    if np.isfinite(tx) and np.isfinite(ty) and 0 <= tx < nx and 0 <= ty < ny:
+                        self.target_t1_px = (tx, ty)
+                        self.target_t1_sky = target_sky
+                        logger.info(
+                            f"T1 positionné depuis OBJCTRA/OBJCTDEC : "
+                            f"RA={target_sky.ra.deg:.6f}°, Dec={target_sky.dec.deg:.6f}°, "
+                            f"pixels=[{tx:.1f}, {ty:.1f}]"
+                        )
+                    else:
+                        logger.warning(
+                            f"T1 (OBJCTRA/OBJCTDEC) hors champ : "
+                            f"pixels=[{tx:.1f}, {ty:.1f}] (image: {nx}x{ny})"
+                        )
+        except Exception as e:
+            logger.warning(f"Impossible d'initialiser T1 depuis OBJCTRA/OBJCTDEC : {e}")
         
         # Réinitialiser le mode de la toolbar pour s'assurer que les clics fonctionnent
         if hasattr(self.toolbar, 'mode'):
@@ -1027,6 +1230,11 @@ class AsteroidPhotometryTab:
         if not self.image_files or not self.current_image_path:
             if hasattr(self, 'image_info_label'):
                 self.image_info_label.config(text="Aucune image chargée", foreground="gray")
+            if hasattr(self, "photo_view_nav_label"):
+                self.photo_view_nav_label.config(
+                    text="Aucune image — chargez un dossier (onglet 1).",
+                    foreground="gray",
+                )
             return
 
         try:
@@ -1038,46 +1246,203 @@ class AsteroidPhotometryTab:
                     text=f"Image {current_idx + 1}/{total}\n{image_name}", 
                     foreground="black"
                 )
+            if hasattr(self, "photo_view_nav_label"):
+                self.photo_view_nav_label.config(
+                    text=(
+                        f"{current_idx + 1}/{total} — {image_name}\n"
+                        f"SET-UP fait : « Photométrie image » pour mesurer sans batch."
+                    ),
+                    foreground="black",
+                )
         except ValueError:
             if hasattr(self, 'image_info_label'):
                 self.image_info_label.config(text="Image inconnue", foreground="orange")
-    
+            if hasattr(self, "photo_view_nav_label"):
+                self.photo_view_nav_label.config(text="Image inconnue dans la série.", foreground="orange")
+
+    def _apply_image_zoom_limits(self, xmin, xmax, ymin, ymax):
+        """Applique les mêmes limites à la grande vue et à l’aperçu (synchronisées)."""
+        self._last_zoom_limits = ((float(xmin), float(xmax)), (float(ymin), float(ymax)))
+        for ax in (getattr(self, "ax", None), getattr(self, "photo_ax", None)):
+            if ax is None:
+                continue
+            try:
+                ax.set_xlim(xmin, xmax)
+                ax.set_ylim(ymin, ymax)
+            except Exception:
+                pass
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.draw_idle()
+        if getattr(self, "photo_canvas", None) is not None:
+            self.photo_canvas.draw_idle()
+
+    def _zoom_image_views(self, factor: float, center_xy=None):
+        """Zoom avant (factor > 1) ou arrière (factor < 1) sur les deux vues FITS."""
+        if self.current_data is None:
+            return
+        photo_ax = getattr(self, "photo_ax", None)
+        if photo_ax is None:
+            return
+        ny, nx = self.current_data.shape
+        nx, ny = float(nx), float(ny)
+        try:
+            x0, x1 = photo_ax.get_xlim()
+            y0, y1 = photo_ax.get_ylim()
+        except Exception:
+            x0, x1 = 0.0, nx
+            y0, y1 = 0.0, ny
+        if not all(np.isfinite([x0, x1, y0, y1])) or x1 <= x0 or y1 <= y0:
+            x0, x1 = 0.0, nx
+            y0, y1 = 0.0, ny
+        if center_xy is not None:
+            xc, yc = float(center_xy[0]), float(center_xy[1])
+        else:
+            xc = (x0 + x1) * 0.5
+            yc = (y0 + y1) * 0.5
+        w = (x1 - x0) / factor
+        h = (y1 - y0) / factor
+        min_span = max(8.0, min(nx, ny) * 0.02)
+        w = float(np.clip(w, min_span, nx))
+        h = float(np.clip(h, min_span, ny))
+        xmin, xmax = xc - w * 0.5, xc + w * 0.5
+        ymin, ymax = yc - h * 0.5, yc + h * 0.5
+        if xmin < 0:
+            xmax -= xmin
+            xmin = 0.0
+        if xmax > nx:
+            xmin -= xmax - nx
+            xmax = nx
+            xmin = max(0.0, xmin)
+        if ymin < 0:
+            ymax -= ymin
+            ymin = 0.0
+        if ymax > ny:
+            ymin -= ymax - ny
+            ymax = ny
+            ymin = max(0.0, ymin)
+        self._apply_image_zoom_limits(xmin, xmax, ymin, ymax)
+
+    def _zoom_image_views_fit(self):
+        """Affiche l’image entière dans les deux vues."""
+        if self.current_data is None:
+            return
+        ny, nx = self.current_data.shape
+        self._apply_image_zoom_limits(0.0, float(nx), 0.0, float(ny))
+
+    def _on_photo_scroll_view(self, event):
+        """Molette sur l’aperçu : zoom centré sur le curseur (synchronisé avec la grande vue)."""
+        if getattr(self, "photo_ax", None) is None or event.inaxes != self.photo_ax:
+            return
+        if self.current_data is None:
+            return
+        step = getattr(event, "step", None)
+        if step is None or step == 0:
+            b = getattr(event, "button", None)
+            if b == "up":
+                step = 1
+            elif b == "down":
+                step = -1
+            else:
+                return
+        if event.xdata is None or event.ydata is None:
+            return
+        factor = 1.2 ** float(step)
+        self._zoom_image_views(factor, center_xy=(event.xdata, event.ydata))
+
     def refresh_display(self, target_px=None):
         """Affiche l'image avec ZScale et optionnellement un cercle sur T1 (sans zoom)."""
         if self.current_data is None:
             logger.warning("Aucune donnée image à afficher")
             return
-
-        self.ax.clear()
         
-        # Contraste ZScale automatique
+        # Sauvegarder le zoom courant avant nettoyage (pour le réappliquer sur l'image suivante)
+        try:
+            if hasattr(self, "ax") and self.ax.has_data():
+                current_xlim = self.ax.get_xlim()
+                current_ylim = self.ax.get_ylim()
+                self._last_zoom_limits = (current_xlim, current_ylim)
+        except Exception:
+            # Ne pas casser l'affichage en cas de problème mineur
+            pass
+
+        axes_list = [self.ax]
+        if getattr(self, "photo_ax", None) is not None:
+            axes_list.append(self.photo_ax)
+
         interval = ZScaleInterval()
         vmin, vmax = interval.get_limits(self.current_data)
-        
-        self.ax.imshow(self.current_data, origin='lower', cmap='gray', vmin=vmin, vmax=vmax)
-        
-        # Pas de zoom - affichage de l'image complète
         ny, nx = self.current_data.shape
-        self.ax.set_xlim(0, nx)
-        self.ax.set_ylim(0, ny)
-        
-        # Afficher T1 si sélectionné (priorité à target_px passé en paramètre, sinon self.target_t1_px)
         display_t1_px = target_px if target_px is not None else self.target_t1_px
-        
-        if display_t1_px:
-            tx, ty = display_t1_px
-            # Vérification que les coordonnées sont valides
-            if np.isfinite(tx) and np.isfinite(ty) and 0 <= tx < nx and 0 <= ty < ny:
-                # Dessin du cercle rouge (tx, ty) correspond à (x, y) matplotlib avec origin='lower'
-                circ = plt.Circle((tx, ty), 15, color='red', fill=False, lw=2, label="T1")
-                self.ax.add_patch(circ)
-                logger.info(f"Cercle tracé sur T1 à [{tx:.1f}, {ty:.1f}]")
+
+        for ax in axes_list:
+            ax.clear()
+            ax.imshow(self.current_data, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+
+            if self.keep_zoom_across_images and self._last_zoom_limits is not None:
+                try:
+                    (x_min, x_max), (y_min, y_max) = self._last_zoom_limits
+                    ax.set_xlim(x_min, x_max)
+                    ax.set_ylim(y_min, y_max)
+                except Exception:
+                    ax.set_xlim(0, nx)
+                    ax.set_ylim(0, ny)
             else:
-                logger.warning(f"Position T1 hors limites : [{tx:.1f}, {ty:.1f}] (image: {nx}x{ny})")
-        
-        # Toujours mettre à jour le canvas pour afficher l'image
+                ax.set_xlim(0, nx)
+                ax.set_ylim(0, ny)
+
+            if display_t1_px:
+                tx, ty = display_t1_px
+                if np.isfinite(tx) and np.isfinite(ty) and 0 <= tx < nx and 0 <= ty < ny:
+                    circ = plt.Circle((tx, ty), 15, color="yellow", fill=False, lw=2, label="T1")
+                    ax.add_patch(circ)
+                    if ax is self.ax:
+                        logger.info(f"Cercle tracé sur T1 à [{tx:.1f}, {ty:.1f}]")
+                elif ax is self.ax:
+                    logger.warning(
+                        f"Position T1 hors limites : [{tx:.1f}, {ty:.1f}] (image: {nx}x{ny})"
+                    )
+
+            if (
+                getattr(self, "_eph_traj_sky", None) is not None
+                and self.wcs is not None
+                and self.current_image_index == 0
+            ):
+                try:
+                    xp, yp = self.wcs.world_to_pixel(self._eph_traj_sky)
+                    xp = np.atleast_1d(np.asarray(xp, dtype=float))
+                    yp = np.atleast_1d(np.asarray(yp, dtype=float))
+                    ok = np.isfinite(xp) & np.isfinite(yp)
+                    if np.any(ok):
+                        xpv, ypv = xp[ok], yp[ok]
+                        if len(xpv) >= 2:
+                            ax.plot(
+                                xpv,
+                                ypv,
+                                "-",
+                                color="#00CED1",
+                                lw=2.0,
+                                alpha=0.95,
+                                zorder=6,
+                                label="Éphéméride (trajectoire)",
+                            )
+                        else:
+                            ax.plot(
+                                xpv,
+                                ypv,
+                                "o",
+                                color="#00CED1",
+                                ms=6,
+                                alpha=0.95,
+                                zorder=6,
+                                label="Éphéméride",
+                            )
+                except Exception as _e:
+                    logger.debug("Tracé trajectoire éphéméride: %s", _e)
+
         self.canvas.draw()
         self.canvas.flush_events()
+        if getattr(self, "photo_canvas", None) is not None:
+            self.photo_canvas.draw()
         self.frame.update_idletasks()
 
     def _update_t1_from_ephemeris(self):
@@ -1130,7 +1495,7 @@ class AsteroidPhotometryTab:
         """Gestionnaire de clic sur l'image pour sélectionner T1."""
         logger.debug(f"Événement clic reçu : inaxes={event.inaxes}, button={event.button}")
         
-        if event.inaxes != self.ax:
+        if event.inaxes != self.ax and event.inaxes != getattr(self, "photo_ax", None):
             return
 
         if self.current_data is None or self.wcs is None:
@@ -1353,6 +1718,316 @@ class AsteroidPhotometryTab:
         margin = 5 * u.minute
         return t_min - margin, t_max + margin
 
+    def _build_ephemeris_trajectory_sky(self, eph_data):
+        """SkyCoord ICRS (points triés par JD) pour projection WCS sur la 1re image."""
+        if eph_data is None or len(eph_data) == 0:
+            return None
+        try:
+            jd = np.asarray(eph_data["datetime_jd"], dtype=float)
+            ra = np.asarray(eph_data["RA"], dtype=float)
+            dec = np.asarray(eph_data["DEC"], dtype=float)
+        except Exception:
+            return None
+        order = np.argsort(jd)
+        ra = ra[order]
+        dec = dec[order]
+        if ra.size == 0:
+            return None
+        return SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+
+    def _sky_coordinate_at_ephemeris_start(self):
+        """Position ciel au JD minimum de self.ephemeris_data (début de la trajectoire)."""
+        eph = self.ephemeris_data
+        if eph is None or len(eph) == 0:
+            return None
+        try:
+            jd = np.asarray(eph["datetime_jd"], dtype=float)
+            ra = np.asarray(eph["RA"], dtype=float)
+            dec = np.asarray(eph["DEC"], dtype=float)
+        except Exception:
+            return None
+        if jd.size == 0:
+            return None
+        i0 = int(np.argmin(jd))
+        return SkyCoord(ra=float(ra[i0]) * u.deg, dec=float(dec[i0]) * u.deg, frame="icrs")
+
+    @staticmethod
+    def _jd_from_observation_record(obs):
+        """Extrait le JD UTC d’un enregistrement d’archive JSON (observations)."""
+        jd = obs.get("jd_utc")
+        if jd is not None:
+            try:
+                return float(jd)
+            except (TypeError, ValueError):
+                pass
+        ds = obs.get("date_obs")
+        if ds:
+            try:
+                s = str(ds).strip().replace(" ", "T", 1)
+                return float(Time(s, scale="utc").jd)
+            except Exception:
+                pass
+        return None
+
+    _MSG_TRAJECTOIRE_JSON_IMAGE_PAR_IMAGE = (
+        "Pour des positions T1 fiables sur chaque cliché, utilisez la photométrie "
+        "image par image (placez ou validez T1 sur chaque image), plutôt que le batch "
+        "uniquement à partir de cette archive."
+    )
+
+    @classmethod
+    def _validate_observations_json_for_trajectory(cls, data: dict) -> tuple[bool, list[str]]:
+        """
+        Vérifie qu'un *_observations.json contient l'essentiel pour une trajectoire
+        exploitable (interpolation temporelle + positions par fichier).
+
+        Retourne (ok, messages). Si ok est False, ne pas charger cette archive pour
+        le batch / la trajectoire ; messages listent erreurs et avertissements.
+        """
+        messages: list[str] = []
+        obs_list = data.get("observations")
+        if not isinstance(obs_list, list) or len(obs_list) == 0:
+            return False, ["Liste « observations » absente ou vide."]
+
+        n_decl = data.get("observation_count")
+        if n_decl is not None:
+            try:
+                n_int = int(n_decl)
+                if n_int != len(obs_list):
+                    messages.append(
+                        f"Avertissement : observation_count={n_int} mais "
+                        f"{len(obs_list)} entrées dans « observations »."
+                    )
+            except (TypeError, ValueError):
+                messages.append("Champ observation_count n'est pas un entier lisible.")
+
+        usable: list[dict] = []
+        for i, obs in enumerate(obs_list):
+            if not isinstance(obs, dict):
+                messages.append(f"Entrée [{i}] : pas un objet JSON (ignorée).")
+                continue
+            fn = obs.get("filename")
+            if not fn or not str(fn).strip():
+                messages.append(f"Entrée [{i}] : « filename » manquant ou vide.")
+                continue
+            fn = str(fn).strip()
+            try:
+                ra = float(obs["ra_deg"])
+                dec = float(obs["dec_deg"])
+            except (KeyError, TypeError, ValueError):
+                messages.append(f"{fn} : ra_deg et/ou dec_deg manquants ou non numériques.")
+                continue
+            if not (np.isfinite(ra) and np.isfinite(dec)):
+                messages.append(f"{fn} : coordonnées non finies.")
+                continue
+            if abs(dec) > 90.0:
+                messages.append(f"{fn} : |dec_deg| > 90°.")
+                continue
+            jd = cls._jd_from_observation_record(obs)
+            if jd is None:
+                messages.append(f"{fn} : pas de jd_utc ni date_obs exploitable.")
+                continue
+            usable.append(
+                {
+                    "filename": fn,
+                    "ra": ra,
+                    "dec": dec,
+                    "jd": float(jd),
+                    "wcs": obs.get("wcs_valid"),
+                }
+            )
+
+        if not usable:
+            return False, messages + ["Aucune observation exploitable (filename, RA/Dec, temps)."]
+
+        by_fn: dict[str, list[dict]] = defaultdict(list)
+        for u in usable:
+            by_fn[u["filename"]].append(u)
+        dup_conflict = False
+        for fn, rows in by_fn.items():
+            if len(rows) < 2:
+                continue
+            ra0, dec0 = rows[0]["ra"], rows[0]["dec"]
+            for r in rows[1:]:
+                if abs(r["ra"] - ra0) > 1e-6 or abs(r["dec"] - dec0) > 1e-6:
+                    messages.append(
+                        f"Le fichier « {fn} » apparaît plusieurs fois avec des positions "
+                        f"RA/Dec différentes (incohérent pour le suivi batch)."
+                    )
+                    dup_conflict = True
+                    break
+
+        jd_arr = np.asarray([u["jd"] for u in usable], dtype=float)
+        n_unique_jd = int(len(np.unique(jd_arr)))
+        if n_unique_jd < 2:
+            messages.append(
+                "Moins de 2 époques JD distinctes : impossible d'interpoler la trajectoire "
+                "correctement dans le temps entre les images."
+            )
+
+        n_bad_wcs = sum(1 for u in usable if u["wcs"] is False)
+        if n_bad_wcs:
+            messages.append(
+                f"{n_bad_wcs} observation(s) avec wcs_valid=false "
+                f"(positions potentiellement peu fiables sur ces clichés)."
+            )
+
+        if len(usable) < len(obs_list):
+            messages.append(
+                f"Seulement {len(usable)}/{len(obs_list)} entrées sont complètes ; "
+                f"les autres seront ignorées pour la trajectoire / le batch."
+            )
+
+        ok = not dup_conflict and n_unique_jd >= 2
+        return ok, messages
+
+    def _observations_json_to_ephemeris_table(self, observations):
+        """
+        Construit une table type Horizons (datetime_jd, RA, DEC [, V]) pour interpolation T1,
+        à partir de la liste « observations » d’un fichier *_observations.json.
+        """
+        if not observations:
+            return None
+        jds, ras, decs, vs = [], [], [], []
+        for obs in observations:
+            if not isinstance(obs, dict):
+                continue
+            ra = obs.get("ra_deg")
+            dec = obs.get("dec_deg")
+            if ra is None or dec is None:
+                continue
+            try:
+                ra = float(ra)
+                dec = float(dec)
+            except (TypeError, ValueError):
+                continue
+            jd = self._jd_from_observation_record(obs)
+            if jd is None:
+                logger.debug("Observation ignorée (pas de JD) : %s", obs.get("filename"))
+                continue
+            jds.append(jd)
+            ras.append(ra)
+            decs.append(dec)
+            m = obs.get("mag")
+            try:
+                vs.append(float(m) if m is not None and np.isfinite(float(m)) else np.nan)
+            except (TypeError, ValueError):
+                vs.append(np.nan)
+        if not jds:
+            return None
+        jd_arr = np.asarray(jds, dtype=float)
+        ra_arr = np.asarray(ras, dtype=float)
+        dec_arr = np.asarray(decs, dtype=float)
+        v_arr = np.asarray(vs, dtype=float)
+        uniq_jd, inv = np.unique(jd_arr, return_inverse=True)
+        nuniq = len(uniq_jd)
+        ra_u = np.bincount(inv, weights=ra_arr, minlength=nuniq) / np.bincount(inv, minlength=nuniq)
+        dec_u = np.bincount(inv, weights=dec_arr, minlength=nuniq) / np.bincount(inv, minlength=nuniq)
+        v_u = np.full(nuniq, np.nan, dtype=float)
+        for k in range(nuniq):
+            sel = inv == k
+            vv = v_arr[sel]
+            vv = vv[np.isfinite(vv)]
+            if vv.size > 0:
+                v_u[k] = float(np.mean(vv))
+        order = np.argsort(uniq_jd)
+        t = Table()
+        t["datetime_jd"] = uniq_jd[order]
+        t["RA"] = ra_u[order]
+        t["DEC"] = dec_u[order]
+        if np.any(np.isfinite(v_u[order])):
+            t["V"] = v_u[order]
+        return t
+
+    def load_trajectory_from_observations_json(self, path=None):
+        """
+        Charge un fichier *_observations.json (dossier rapports) pour définir la trajectoire
+        de l’objet (interpolation identique aux éphémérides Horizons).
+        """
+        from tkinter import filedialog
+
+        if path is None:
+            initialdir = None
+            if self.directory:
+                rd = self._get_rapports_dir()
+                if rd is not None and rd.is_dir():
+                    initialdir = str(rd)
+                else:
+                    initialdir = str(Path(self.directory))
+            if initialdir is None:
+                initialdir = os.getcwd()
+            path = filedialog.askopenfilename(
+                title="Charger une trajectoire (archive observations JSON)",
+                filetypes=[("JSON observations", "*.json"), ("Tous les fichiers", "*.*")],
+                initialdir=initialdir,
+            )
+            if not path:
+                return
+        path = Path(path)
+        if not path.is_file():
+            messagebox.showerror("Erreur", f"Fichier introuvable :\n{path}")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Lecture JSON impossible :\n{e}")
+            logger.error("load_trajectory_from_observations_json: %s", e, exc_info=True)
+            return
+        observations = data.get("observations")
+        if not isinstance(observations, list) or len(observations) == 0:
+            messagebox.showerror("Erreur", "Le JSON ne contient pas de liste « observations » exploitable.")
+            return
+        ok_traj, traj_msgs = self._validate_observations_json_for_trajectory(data)
+        if not ok_traj:
+            detail = "\n".join(traj_msgs) if traj_msgs else "Contrôle inconnu."
+            messagebox.showerror(
+                "Archive observations JSON",
+                detail + "\n\n" + self._MSG_TRAJECTOIRE_JSON_IMAGE_PAR_IMAGE,
+            )
+            return
+        if traj_msgs:
+            if not messagebox.askyesno(
+                "Archive observations JSON",
+                "\n".join(traj_msgs)
+                + "\n\nDes problèmes ci-dessus peuvent dégrader la trajectoire. Continuer le chargement ?",
+            ):
+                return
+        eph_data = self._observations_json_to_ephemeris_table(observations)
+        if eph_data is None or len(eph_data) == 0:
+            messagebox.showerror(
+                "Erreur",
+                "Aucune position valide (ra_deg, dec_deg, jd_utc ou date_obs) dans ce fichier.",
+            )
+            return
+        self.ephemeris_data = eph_data
+        self._ephemeris_from_json_archive = True
+        self._eph_traj_sky = self._build_ephemeris_trajectory_sky(eph_data)
+        aid = (data.get("asteroid_id") or "").strip()
+        if aid and (not (self.asteroid_id_var.get() or "").strip() or (self.asteroid_id_var.get() or "").strip().upper() == "UNKNOWN"):
+            self.asteroid_id_var.set(aid)
+
+        npt = len(eph_data)
+        t0 = Time(eph_data["datetime_jd"][0], format="jd", scale="utc").isot
+        t1 = Time(eph_data["datetime_jd"][-1], format="jd", scale="utc").isot
+        logger.info(
+            "Trajectoire chargée depuis JSON : %s (%s points JD, %s → %s)",
+            path,
+            npt,
+            t0[:19],
+            t1[:19],
+        )
+        if self.image_files:
+            self.load_image(self.image_files[0])
+        elif self.current_data is not None:
+            self.refresh_display()
+        messagebox.showinfo(
+            "Trajectoire JSON",
+            f"Archive chargée : {path.name}\n"
+            f"{npt} points pour l’interpolation RA/Dec (JD {t0[:19]} … {t1[:19]}).\n\n"
+            f"La position T1 utilisera cette trajectoire (comme pour Horizons).",
+        )
+
     def fetch_ephemeris(self):
         """Récupère les éphémérides depuis JPL Horizons avec coordonnées depuis config.py."""
         target_id = self.asteroid_id_var.get().strip()
@@ -1540,7 +2215,14 @@ class AsteroidPhotometryTab:
                 eph_data['S-T-O'] = col_phase
 
             self.ephemeris_data = eph_data
+            self._ephemeris_from_json_archive = False
+            self._eph_traj_sky = self._build_ephemeris_trajectory_sky(eph_data)
             logger.info(f"Éphémérides récupérées : {len(eph_data)} points")
+
+            if self.image_files:
+                self.load_image(self.image_files[0])
+            else:
+                self.refresh_display()
 
             messagebox.showinfo("Succès", f"Éphémérides récupérées ({len(eph_data)} points).")
 
@@ -1869,23 +2551,52 @@ class AsteroidPhotometryTab:
         self._launch_manual_comps_selection()
 
     def _launch_manual_comps_selection(self):
-        """Fenêtre simple de sélection manuelle des étoiles de comparaison (astéroïdes)."""
+        """Fenêtre SET-UP : placer T1 par clic sur la cible, puis sélectionner les comparateurs."""
         from core.photometry_pipeline_asteroids import launch_photometry_aperture, refine_centroid
         from astropy.visualization import ZScaleInterval
 
         data = self.current_data
         wcs = self.wcs
+        if (
+            getattr(self, "_ephemeris_from_json_archive", False)
+            and self.ephemeris_data is not None
+            and wcs is not None
+            and data is not None
+        ):
+            sc0 = self._sky_coordinate_at_ephemeris_start()
+            if sc0 is not None:
+                try:
+                    tx, ty = wcs.world_to_pixel(sc0)
+                    ny_img, nx_img = int(data.shape[0]), int(data.shape[1])
+                    if (
+                        np.isfinite(tx)
+                        and np.isfinite(ty)
+                        and 0 <= tx < nx_img
+                        and 0 <= ty < ny_img
+                    ):
+                        self.target_t1_sky = sc0
+                        self.target_t1_px = (float(tx), float(ty))
+                        logger.info(
+                            "SET-UP comparateurs : cercle T1 au début de la trajectoire JSON "
+                            "(JD min), px=[%.1f, %.1f]",
+                            tx,
+                            ty,
+                        )
+                        self.refresh_display()
+                    else:
+                        logger.warning(
+                            "Début trajectoire JSON hors champ sur l’image courante ; "
+                            "placez T1 manuellement ou affichez la 1re image."
+                        )
+                except Exception as e:
+                    logger.debug("Placement T1 début JSON (SET-UP) : %s", e)
         target_coord = self.target_t1_sky
         t1_patch = None
         t1_text = None
 
-        if target_coord is None:
-            messagebox.showerror("Erreur", "T1 non défini. Cliquez d'abord sur T1 dans l'image principale.")
-            return
-
         root = tk.Toplevel()
-        root.title("Sélection manuelle des comparateurs")
-        root.geometry("1350x800")
+        root.title("Photométrie — T1 et comparateurs")
+        root.geometry("1420x820")
 
         # ZScale
         try:
@@ -1895,11 +2606,195 @@ class AsteroidPhotometryTab:
             vmin, vmax = np.percentile(data, [10, 90])
 
         # --- Zone Gauche (Liste) ---
-        left_frame = tk.Frame(root, width=420, bg="#f0f0f0")
+        left_frame = tk.Frame(root, width=520, bg="#f0f0f0")
         left_frame.pack(side=tk.LEFT, fill=tk.Y)
         left_frame.pack_propagate(False)
 
         tk.Label(left_frame, text=" Étoiles de comparaison ", bg="#ddd", font=("Arial", 10, "bold"), pady=5).pack(fill=tk.X)
+
+        t1_panel = tk.LabelFrame(left_frame, text="Informations T1", bg="#e8f4fc", fg="#003366")
+        t1_panel.pack(fill=tk.X, padx=6, pady=(4, 6))
+        t1_inner = tk.Frame(t1_panel, bg="#e8f4fc")
+        t1_inner.pack(fill=tk.X, padx=6, pady=6)
+
+        gaia_for_comps_cache = [None]
+        tap_g_mag_cache = {}
+
+        def _invalidate_gaia_cache():
+            gaia_for_comps_cache[0] = None
+            tap_g_mag_cache.clear()
+
+        def _get_gaia_table_for_comps():
+            if gaia_for_comps_cache[0] is not None:
+                return gaia_for_comps_cache[0]
+            center = self.target_t1_sky
+            if center is None:
+                return None
+            try:
+                # DR3 + DR2, hors cache ; rayon = FOV autour de T1 (pas 12′ fixe : comps au bord > 15′).
+                mag_lim = max(float(self.gaia_mag_limit_var.get()), 21.0)
+                radius = gaia_box_radius_for_imaging_fov(center, wcs, data.shape)
+                row_lim = 50_000
+                tab_dr3 = optimized_query_gaia(
+                    center,
+                    radius,
+                    mag_limit=mag_lim,
+                    gaia_cache=self.gaia_cache,
+                    bypass_cache=True,
+                    row_limit=row_lim,
+                )
+                tab_dr2 = query_gaia_dr2_vizier_box(
+                    center, radius, mag_limit=mag_lim, row_limit=row_lim
+                )
+                gaia_for_comps_cache[0] = merge_gaia_dr3_dr2_photometry_field(
+                    tab_dr3, tab_dr2, dedup_arcsec=1.0
+                )
+                n = len(gaia_for_comps_cache[0])
+                logger.info(
+                    "SET-UP comps : Gaia DR3+DR2 fusion, %d étoiles (G ≤ %.1f, boîte ≈ %.2f° autour de T1).",
+                    n,
+                    mag_lim,
+                    float(radius.to(u.deg).value),
+                )
+                if n == 0:
+                    logger.warning(
+                        "SET-UP comps : catalogue Gaia vide (réseau, Vizier ou champ). "
+                        "Vérifiez la connexion ; G_Gaia tentera un repli par étoile."
+                    )
+            except Exception as e:
+                logger.warning("Gaia (liste comps SET-UP) : %s", e)
+                gaia_for_comps_cache[0] = Table()
+            return gaia_for_comps_cache[0]
+
+        def _gaia_g_for_coord(coord, gtab):
+            # 1) D’abord le tableau champ (Vizier DR3+DR2 déjà chargé) : zéro requête vers l’archive Gaia
+            #    → évite le throttling ESA quand on ajoute C1…C8 en rafraîchissant la liste.
+            # 2) Puis TAP DR3 / DR2 avec pause (recommandation archive), 3) repli Vizier complet.
+            r_tap = float(self.GAIA_MAG_TAP_CONE_ARCSEC)
+            ck = (
+                round(float(coord.ra.deg), 5),
+                round(float(coord.dec.deg), 5),
+                round(r_tap, 1),
+            )
+            if ck in tap_g_mag_cache:
+                return tap_g_mag_cache[ck]
+            g = None
+            try:
+                if (
+                    gtab is not None
+                    and len(gtab) > 0
+                    and "Gmag" in gtab.colnames
+                    and "RA_ICRS" in gtab.colnames
+                    and "DE_ICRS" in gtab.colnames
+                ):
+                    g = self._first_finite_gmag_nearest(
+                        coord,
+                        gtab["RA_ICRS"],
+                        gtab["DE_ICRS"],
+                        gtab["Gmag"],
+                        max_sep_arcsec=float(self.GAIA_MAG_FIELD_MATCH_ARCSEC),
+                    )
+                if g is None:
+                    g = self._gaia_phot_g_mean_tap_cone(
+                        coord, radius_arcsec=r_tap, gaia_table="gaiadr3.gaia_source"
+                    )
+                    if g is None:
+                        time.sleep(0.55)
+                        g = self._gaia_phot_g_mean_tap_cone(
+                            coord, radius_arcsec=r_tap, gaia_table="gaiadr3.gaia_source"
+                        )
+                    if g is None:
+                        time.sleep(0.55)
+                        g = self._gaia_phot_g_mean_tap_cone(
+                            coord, radius_arcsec=r_tap, gaia_table="gaiadr2.gaia_source"
+                        )
+                    if g is None:
+                        time.sleep(0.45)
+                        g = self._query_gaia_gmag_for_coord(coord)
+                if g is None:
+                    logger.debug(
+                        "SET-UP G_Gaia : aucune mag pour RA=%.6f° Dec=%.6f°",
+                        float(coord.ra.deg),
+                        float(coord.dec.deg),
+                    )
+            except Exception:
+                g = None
+            if g is not None:
+                tap_g_mag_cache[ck] = g
+            return g
+
+        def refresh_t1_display():
+            # Ne pas toucher aux widgets si la fenêtre a été fermée ou Tcl dans un état incohérent
+            # (ex. messagebox modal lancé depuis le callback matplotlib).
+            try:
+                if not root.winfo_exists() or not t1_inner.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            try:
+                for w in t1_inner.winfo_children():
+                    w.destroy()
+            except tk.TclError:
+                return
+            if target_coord is None:
+                tk.Label(
+                    t1_inner,
+                    text="T1 : non placée — Étape 1 : cliquez sur la cible sur l'image (désactivez zoom/pan).",
+                    bg="#e8f4fc",
+                    wraplength=480,
+                    justify=tk.LEFT,
+                ).pack(anchor="w")
+                return
+            try:
+                ra_h = target_coord.ra.to_string(unit=u.hourangle, sep=" ", precision=2)
+                dec_d = target_coord.dec.to_string(unit=u.deg, sep=" ", precision=1)
+                tk.Label(
+                    t1_inner,
+                    text=f"α  = {ra_h}     δ = {dec_d}",
+                    bg="#e8f4fc",
+                    font=("Consolas", 9),
+                ).pack(anchor="w")
+                tk.Label(
+                    t1_inner,
+                    text=f"RA (°) = {target_coord.ra.deg:.6f}    Dec (°) = {target_coord.dec.deg:.6f}",
+                    bg="#e8f4fc",
+                    font=("Consolas", 9),
+                ).pack(anchor="w")
+                tx, ty = wcs.world_to_pixel(target_coord)
+                tk.Label(
+                    t1_inner,
+                    text=f"Pixels (centroïde) : x = {tx:.2f} , y = {ty:.2f}",
+                    bg="#e8f4fc",
+                ).pack(anchor="w")
+                if self.ephemeris_data is not None and self.current_header:
+                    try:
+                        t_img = Time(
+                            self.current_header.get("DATE-OBS", self.current_header.get("DATE")),
+                            scale="utc",
+                        )
+                        mv = _interpolate_magnitude_V(self.ephemeris_data, t_img)
+                        if mv is not None and abs(float(mv) - 99.0) > 0.05:
+                            tk.Label(
+                                t1_inner,
+                                text=f"Mag V (éphémérides Horizons) : {float(mv):.2f}",
+                                bg="#e8f4fc",
+                                fg="#006400",
+                            ).pack(anchor="w")
+                        else:
+                            tk.Label(
+                                t1_inner,
+                                text="Mag V : colonne V absente ou non interpolable dans les éphémérides.",
+                                bg="#e8f4fc",
+                                fg="gray",
+                                font=("Arial", 8),
+                            ).pack(anchor="w")
+                    except Exception:
+                        pass
+            except Exception as e:
+                try:
+                    tk.Label(t1_inner, text=str(e), bg="#e8f4fc", fg="red").pack(anchor="w")
+                except tk.TclError:
+                    pass
 
         list_container = tk.Frame(left_frame, bg="#f0f0f0")
         list_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -1911,18 +2806,38 @@ class AsteroidPhotometryTab:
         right_frame = tk.Frame(root, bg="black")
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
+        status_initial = (
+            "Étape 1 : cliquez sur la cible (astéroïde) pour placer T1. Désactivez zoom/pan matplotlib si besoin."
+            if target_coord is None
+            else "Étape 2 : cliquez sur les étoiles de comparaison (évitez T1, en rouge)."
+        )
         status_label = tk.Label(
             right_frame,
-            text="Cliquez sur les étoiles de comparaison (gauche).",
+            text=status_initial,
             bg="black",
             fg="#00ff00",
             font=("Consolas", 11, "bold"),
-            pady=5
+            pady=5,
+            wraplength=720,
+            justify=tk.LEFT,
         )
         status_label.pack(side=tk.TOP, fill=tk.X)
 
-        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': wcs})
-        ax.imshow(data, origin='lower', cmap='gray', vmin=vmin, vmax=vmax)
+        def _safe_status(text, **kw):
+            try:
+                if root.winfo_exists() and status_label.winfo_exists():
+                    status_label.config(text=text, **kw)
+            except tk.TclError:
+                pass
+
+        # Axes en coordonnées PIXEL (pas projection WCS) : avec WCSAxes, xdata/ydata au clic sont en °
+        # et cassent refine_centroid / les patches ; ici x,y = colonne, ligne comme world_to_pixel.
+        fig = Figure(figsize=(8, 8))
+        ax = fig.add_subplot(111)
+        ny, nx = int(data.shape[0]), int(data.shape[1])
+        ax.imshow(data, origin="lower", cmap="gray", vmin=vmin, vmax=vmax, extent=(0, nx, 0, ny))
+        ax.set_xlabel("x (pixel)")
+        ax.set_ylabel("y (pixel)")
 
         # Afficher T1 si déjà défini
         if target_coord is not None:
@@ -1959,14 +2874,67 @@ class AsteroidPhotometryTab:
         comp_texts = []
 
         def update_list():
-            for w in list_container.winfo_children():
-                w.destroy()
+            try:
+                if not root.winfo_exists() or not list_container.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            try:
+                for w in list_container.winfo_children():
+                    w.destroy()
+            except tk.TclError:
+                return
+            hdr = tk.Frame(list_container, bg="#d0d0d0")
+            hdr.pack(fill="x", pady=(0, 2))
+            tk.Label(hdr, text="", width=3, bg="#d0d0d0").pack(side="left")
+            tk.Label(hdr, text="RA °", width=9, bg="#d0d0d0", font=("Arial", 8, "bold")).pack(side="left", padx=1)
+            tk.Label(hdr, text="Dec °", width=9, bg="#d0d0d0", font=("Arial", 8, "bold")).pack(side="left", padx=1)
+            tk.Label(hdr, text='Sep. T1 (")', width=9, bg="#d0d0d0", font=("Arial", 8, "bold")).pack(
+                side="left", padx=1
+            )
+            tk.Label(hdr, text="G_Gaia", width=7, bg="#d0d0d0", font=("Arial", 8, "bold")).pack(side="left", padx=1)
+            tk.Label(hdr, text="ΔG−Veph", width=8, bg="#d0d0d0", font=("Arial", 8, "bold")).pack(
+                side="left", padx=1
+            )
+
+            gtab = _get_gaia_table_for_comps() if comps and target_coord is not None else None
+            mv_t1 = None
+            if target_coord is not None and self.ephemeris_data is not None and self.current_header:
+                try:
+                    t_img = Time(
+                        self.current_header.get("DATE-OBS", self.current_header.get("DATE")),
+                        scale="utc",
+                    )
+                    mv_t1 = _interpolate_magnitude_V(self.ephemeris_data, t_img)
+                    if mv_t1 is not None and abs(float(mv_t1) - 99.0) < 0.05:
+                        mv_t1 = None
+                except Exception:
+                    mv_t1 = None
+
             for i, comp in enumerate(comps):
                 row = tk.Frame(list_container, bg="#f0f0f0")
-                row.pack(fill="x", pady=2)
-                tk.Label(row, text=f"C{i+1}", width=4, fg="blue", bg="#f0f0f0").pack(side="left")
-                tk.Label(row, text=f"{comp.ra.deg:.5f}", width=12, bg="#fff").pack(side="left", padx=2)
-                tk.Label(row, text=f"{comp.dec.deg:.5f}", width=12, bg="#fff").pack(side="left", padx=2)
+                row.pack(fill="x", pady=1)
+                tk.Label(row, text=f"C{i+1}", width=3, fg="blue", bg="#f0f0f0", font=("Consolas", 9, "bold")).pack(
+                    side="left"
+                )
+                tk.Label(row, text=f"{comp.ra.deg:.5f}", width=9, bg="#fff").pack(side="left", padx=1)
+                tk.Label(row, text=f"{comp.dec.deg:.5f}", width=9, bg="#fff").pack(side="left", padx=1)
+                if target_coord is not None:
+                    sep_as = target_coord.separation(comp).arcsec
+                    sep_txt = f"{sep_as:6.1f}"
+                else:
+                    sep_txt = "   —  "
+                tk.Label(row, text=sep_txt, width=9, bg="#fff").pack(side="left", padx=1)
+                gg = _gaia_g_for_coord(comp, gtab)
+                tk.Label(
+                    row, text=f"{gg:5.2f}" if gg is not None else "  —  ", width=7, bg="#fff"
+                ).pack(side="left", padx=1)
+                if gg is not None and mv_t1 is not None:
+                    tk.Label(row, text=f"{gg - float(mv_t1):+5.2f}", width=8, bg="#fff").pack(
+                        side="left", padx=1
+                    )
+                else:
+                    tk.Label(row, text="   —  ", width=8, bg="#fff").pack(side="left", padx=1)
 
         def add_comp(x, y):
             try:
@@ -1978,11 +2946,11 @@ class AsteroidPhotometryTab:
 
                 # Éviter T1 et doublons
                 if target_coord is not None and coord.separation(target_coord).arcsec < 5.0:
-                    status_label.config(text="⚠️ Cliquez sur une étoile différente de T1", fg="white", bg="red")
+                    _safe_status("⚠️ Cliquez sur une étoile différente de T1", fg="white", bg="red")
                     return
                 for c in comps:
                     if coord.separation(c).arcsec < 5.0:
-                        status_label.config(text="⚠️ Comparateur déjà sélectionné", fg="white", bg="red")
+                        _safe_status("⚠️ Comparateur déjà sélectionné", fg="white", bg="red")
                         return
 
                 comps.append(coord)
@@ -1995,24 +2963,91 @@ class AsteroidPhotometryTab:
                 comp_texts.append(text)
                 canvas.draw()
                 update_list()
-                status_label.config(text=f"Comparateur ajouté: C{idx}", fg="#00ff00", bg="black")
+                _safe_status(f"Comparateur ajouté: C{idx}", fg="#00ff00", bg="black")
             except Exception as e:
                 logger.error(f"Erreur ajout comparateur: {e}", exc_info=True)
-                status_label.config(text=f"Erreur ajout comparateur: {e}", fg="white", bg="red")
+                _safe_status(f"Erreur ajout comparateur: {e}", fg="white", bg="red")
 
         def on_click(event):
+            nonlocal target_coord, t1_patch, t1_text
             if event.button != 1:
                 return
-            if toolbar.mode != "" and toolbar.mode is not None:
-                status_label.config(text=f"⚠️ MODE {str(toolbar.mode).upper()} ACTIF ! Désactivez la loupe.", fg="white", bg="red")
+            tb_mode = getattr(toolbar, "mode", None) or getattr(toolbar, "_active", None)
+            if tb_mode and str(tb_mode).strip():
+                _safe_status(
+                    f"⚠️ Outil matplotlib actif ({tb_mode}) — désactivez zoom/pan.",
+                    fg="white",
+                    bg="red",
+                )
                 return
             if not event.inaxes:
                 return
             x_raw, y_raw = event.xdata, event.ydata
             if not np.isfinite(x_raw) or not np.isfinite(y_raw):
                 return
+            # Sécurité : rester dans l'image
+            if not (0 <= x_raw < nx and 0 <= y_raw < ny):
+                _safe_status("⚠️ Clic hors image", fg="white", bg="red")
+                return
+
+            if target_coord is None:
+                try:
+                    box_sz = self.centroid_box_size_var.get()
+                    px_refined, py_refined = refine_centroid(data, x_raw, y_raw, box_size=box_sz)
+                    # Pas de messagebox ici : depuis le callback matplotlib cela réentre dans la boucle
+                    # Tk et peut détruire les widgets de cette fenêtre (TclError / bad window path).
+                    self._finalize_t1_selection(
+                        px_refined, py_refined, show_message=False, context_label="setup photométrie"
+                    )
+                    target_coord = self.target_t1_sky
+                    if t1_patch is not None:
+                        try:
+                            t1_patch.remove()
+                        except Exception:
+                            pass
+                    if t1_text is not None:
+                        try:
+                            t1_text.remove()
+                        except Exception:
+                            pass
+                    tx, ty = wcs.world_to_pixel(target_coord)
+                    if np.isfinite(tx) and np.isfinite(ty):
+                        t1_patch = Circle((tx, ty), 18, edgecolor="red", lw=2, fill=False)
+                        t1_text = ax.annotate("T1", (tx + 20, ty + 20), color="red", fontweight="bold")
+                        ax.add_patch(t1_patch)
+                    canvas.draw()
+                    _invalidate_gaia_cache()
+
+                    def _post_t1_placed():
+                        if not root.winfo_exists():
+                            return
+                        refresh_t1_display()
+                        try:
+                            rap = float(self.aperture_radius_var.get())
+                            rin = float(self.annulus_inner_var.get())
+                            rout = float(self.annulus_outer_var.get())
+                            _safe_status(
+                                f"T1 enregistré — ouvertures {rap:.1f} / {rin:.1f} / {rout:.1f} px. "
+                                "Étape 2 : comparateurs (évitez T1, en rouge).",
+                                fg="#00ff00",
+                                bg="black",
+                            )
+                        except Exception:
+                            _safe_status(
+                                "T1 enregistré. Étape 2 : cliquez les comparateurs.",
+                                fg="#00ff00",
+                                bg="black",
+                            )
+
+                    root.after_idle(_post_t1_placed)
+                except Exception as e:
+                    logger.error("Erreur placement T1 (setup): %s", e, exc_info=True)
+                    _safe_status(f"Erreur T1 : {e}", fg="white", bg="red")
+                return
+
             add_comp(x_raw, y_raw)
 
+        refresh_t1_display()
         fig.canvas.mpl_connect("button_press_event", on_click)
 
         def remove_last():
@@ -2049,12 +3084,38 @@ class AsteroidPhotometryTab:
             canvas.draw()
             update_list()
 
+        def reset_t1_setup():
+            nonlocal target_coord, t1_patch, t1_text
+            self.target_t1_px = None
+            self.target_t1_sky = None
+            target_coord = None
+            for art in (t1_patch, t1_text):
+                if art is not None:
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+            t1_patch = None
+            t1_text = None
+            canvas.draw()
+            _invalidate_gaia_cache()
+            refresh_t1_display()
+            update_list()
+            _safe_status(
+                "Étape 1 : cliquez sur la cible pour replacer T1.",
+                fg="#00ff00",
+                bg="black",
+            )
+
         def validate():
+            if target_coord is None:
+                messagebox.showwarning("Stop", "Placez T1 en cliquant sur la cible avant de valider.")
+                return
             if not comps:
                 messagebox.showwarning("Stop", "Sélectionnez au moins un comparateur.")
                 return
 
-            target_data = {'coord': target_coord}
+            target_data = {"coord": target_coord}
             launch_photometry_aperture(
                 fits_path=self.current_image_path,
                 target_data=target_data,
@@ -2063,8 +3124,9 @@ class AsteroidPhotometryTab:
             )
             root.destroy()
 
-        tk.Button(btn_frame, text="↩ Supprimer dernier", command=remove_last).pack(fill=tk.X, padx=5, pady=2)
-        tk.Button(btn_frame, text="🧹 Effacer tout", command=clear_all).pack(fill=tk.X, padx=5, pady=2)
+        tk.Button(btn_frame, text="↩ Supprimer dernier comp.", command=remove_last).pack(fill=tk.X, padx=5, pady=2)
+        tk.Button(btn_frame, text="🧹 Effacer tous les comp.", command=clear_all).pack(fill=tk.X, padx=5, pady=2)
+        tk.Button(btn_frame, text="↺ Replacer T1", command=reset_t1_setup).pack(fill=tk.X, padx=5, pady=2)
         tk.Button(btn_frame, text="✅ VALIDER LA SÉLECTION", command=validate).pack(fill=tk.X, padx=5, pady=5)
 
     def _on_aperture_finished(self, selections):
@@ -2079,7 +3141,11 @@ class AsteroidPhotometryTab:
         
         # Vérifier que T1 a été sélectionné par clic
         if self.target_t1_sky is None:
-            messagebox.showerror("Erreur", "T1 non sélectionné. Cliquez sur l'image pour désigner T1.")
+            messagebox.showerror(
+                "Erreur",
+                "T1 non défini. Utilisez « SET-UP PHOTOMÉTRIE » (clic T1 + comparateurs) "
+                "ou placez T1 depuis l’onglet Astrométrie, puis réessayez.",
+            )
             return
         
         # Utiliser les coordonnées T1 sélectionnées par l'utilisateur
@@ -2189,18 +3255,11 @@ class AsteroidPhotometryTab:
             logger.error(f"Erreur recherche comparateurs : {e}")
             comp_coords = []
         
-        # Lancement de la fenêtre de sélection
-        def on_finish(selections):
-            """Callback appelé quand la sélection est validée."""
-            self.current_selections = selections
-            logger.info(f"Sélection validée : {len(selections)} étoiles")
-            messagebox.showinfo("Succès", f"Photométrie configurée : {len(selections)} étoiles sélectionnées")
-        
         launch_photometry_aperture(
             fits_path=self.current_image_path,
             target_data={'coord': target_coord},
             comp_coords_data=[{'coord': c} for c in comp_coords],
-            on_finish=on_finish
+            on_finish=self._on_aperture_finished,
         ) 
         
 
@@ -2347,7 +3406,7 @@ class AsteroidPhotometryTab:
     def solve_astrometry_classical(self, path=None):
         """
         Résout l'astrométrie classique avec une ouverture unique calculée à partir du FWHM estimé.
-        Utilise les ouvertures proposées depuis le FWHM (r_ap = 1.4 * FWHM).
+        Utilise les ouvertures proposées depuis le FWHM (r_ap ≈ 2 × FWHM, cf. photometry_apertures).
         """
         if path is None:
             path = self.current_image_path
@@ -2435,7 +3494,7 @@ class AsteroidPhotometryTab:
                 fwhm_estimated = self.fwhm_var.get()
                 logger.info(f"Utilisation FWHM par défaut : {fwhm_estimated:.2f} pixels")
 
-            # Calcul de l'ouverture à utiliser (r_ap = 1.4 * FWHM)
+            # Calcul de l'ouverture à utiliser (r_ap ≈ 2 × FWHM)
             r_ap, r_in, r_out = calculate_aperture_radii_from_fwhm(fwhm_estimated, default_fwhm=4.0)
             logger.info(f"Ouverture classique calculée : {r_ap:.1f} px (FWHM={fwhm_estimated:.2f} px)")
             
@@ -2826,32 +3885,32 @@ class AsteroidPhotometryTab:
                 vals[8] = "1" if selected else "0"
                 self.zero_aperture_tree.item(str(idx), values=vals)
     
-    def _get_results_dir(self):
-        """Retourne le dossier results et le crée si nécessaire."""
+    def _get_rapports_dir(self):
+        """Retourne le dossier rapports (sorties ADES, JSON, astrométrie, CSV) et le crée si nécessaire."""
         if not self.directory:
             return None
-        results_dir = Path(self.directory) / "results"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        return results_dir
+        rapports_dir = Path(self.directory) / "rapports"
+        rapports_dir.mkdir(parents=True, exist_ok=True)
+        return rapports_dir
     
-    def _open_results_folder(self):
-        """Ouvre le dossier results dans l'explorateur."""
-        results_dir = self._get_results_dir()
-        if not results_dir:
+    def _open_rapports_folder(self):
+        """Ouvre le dossier rapports dans l'explorateur."""
+        rapports_dir = self._get_rapports_dir()
+        if not rapports_dir:
             messagebox.showerror("Erreur", "Aucun dossier d'images actif.")
             return
         try:
-            os.startfile(str(results_dir))
+            os.startfile(str(rapports_dir))
         except Exception:
             try:
-                webbrowser.open(results_dir.as_uri())
+                webbrowser.open(rapports_dir.as_uri())
             except Exception as e:
-                logger.error(f"Impossible d'ouvrir le dossier results: {e}")
-                messagebox.showerror("Erreur", f"Impossible d'ouvrir le dossier results:\n{e}")
+                logger.error(f"Impossible d'ouvrir le dossier rapports: {e}")
+                messagebox.showerror("Erreur", f"Impossible d'ouvrir le dossier rapports:\n{e}")
     
     def _export_zero_aperture_full_table(self):
-        """Exporte le tableau complet ZA (toutes ouvertures, selected inclus) dans results."""
-        results_dir = self._get_results_dir()
+        """Exporte le tableau complet ZA (toutes ouvertures, selected inclus) dans rapports."""
+        results_dir = self._get_rapports_dir()
         if not results_dir:
             return None
         rows = self._build_zero_aperture_rows()
@@ -3006,7 +4065,7 @@ class AsteroidPhotometryTab:
             
             asteroid_id = self.asteroid_id_var.get().strip() or "UNKNOWN"
             # Archive CSV dédiée ZA(0)
-            results_dir = self._get_results_dir()
+            results_dir = self._get_rapports_dir()
             csv_path = None
             if results_dir is not None:
                 df = pd.DataFrame(extrapolated_obs)
@@ -3056,12 +4115,12 @@ class AsteroidPhotometryTab:
             observations = self._apply_photometry_mags_to_observations(observations)
             ades_path = self._generate_ades_report(observations)
             if show_message:
-                msg = "Rapports générés dans le dossier results :"
+                msg = "Rapports générés dans le dossier rapports :"
                 if za_path:
                     msg += f"\n- Tableau ZA complet : {za_path}"
                 if ades_path:
                     msg += f"\n- ADES final MPC : {ades_path}"
-                messagebox.showinfo("Exports results", msg)
+                messagebox.showinfo("Exports rapports", msg)
             return ades_path
         except Exception as e:
             logger.error(f"Erreur génération ADES final MPC: {e}", exc_info=True)
@@ -3142,7 +4201,7 @@ class AsteroidPhotometryTab:
         ttk.Button(btn_frame, text="🧾 Création des rapports ADES", command=self._create_final_ades_reports).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="📝 Export ADES final (MPC)", command=self._export_ades_final_mpc).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="🧮 Générer résultat final ZA(0)", command=self._export_zero_aperture_extrapolated_final).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="📤 Ouvrir dossier results", command=self._open_results_folder).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="📤 Ouvrir dossier rapports", command=self._open_rapports_folder).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Tout sélectionner", command=lambda: self._set_all_zero_aperture_selected(True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Tout désélectionner", command=lambda: self._set_all_zero_aperture_selected(False)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Rafraîchir", command=self.refresh_zero_aperture_table).pack(side=tk.LEFT, padx=4)
@@ -3385,7 +4444,7 @@ class AsteroidPhotometryTab:
         
         obs_name = config.OBSERVATORY.get('name', 'Observatoire Personnel')
         
-        results_dir = self._get_results_dir()
+        results_dir = self._get_rapports_dir()
         if results_dir is None:
             return None
         output_path = results_dir / (output_filename or f"{asteroid_id}_ADES_final_MPC.psv")
@@ -3553,7 +4612,10 @@ class AsteroidPhotometryTab:
             'observations': observations
         }
         
-        output_path = Path(self.directory) / "rapport" / f"{asteroid_id}_observations.json"
+        rd = self._get_rapports_dir()
+        if rd is None:
+            return
+        output_path = rd / f"{asteroid_id}_observations.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(archive_data, f, indent=2, ensure_ascii=False)
@@ -3567,7 +4629,7 @@ class AsteroidPhotometryTab:
         
         import config
         
-        output_dir = self._get_results_dir()
+        output_dir = self._get_rapports_dir()
         if output_dir is None:
             return None
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -3637,7 +4699,10 @@ class AsteroidPhotometryTab:
         obs_lon = config.OBSERVATORY.get('lon', 0.0)
         obs_elev = config.OBSERVATORY.get('elev', 0.0)
         
-        output_path = Path(self.directory) / "rapport" / f"{asteroid_id}_Horizons.txt"
+        rd = self._get_rapports_dir()
+        if rd is None:
+            return
+        output_path = rd / f"{asteroid_id}_Horizons.txt"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # En-tête du rapport Horizons
@@ -3725,13 +4790,21 @@ class AsteroidPhotometryTab:
         logger.info(f"Rapport Horizons TXT généré : {output_path} ({len(eph_data)} points)")
         
     def _load_astrometry_positions(self):
-        """Charge les positions astrométriques avec priorité ZA0, puis fallback JSON."""
+        """
+        Charge les positions astrométriques avec priorité ZA0, puis fallback JSON.
+
+        Retourne (positions_map | None, messages_contrôle | None).
+        messages_contrôle : textes issus du JSON (rejets ou avertissements) ;
+        None si ZA0 a fourni la carte ou si aucun JSON n'a été lu.
+        """
         if not self.directory:
-            return None
-        
+            return None, None
+
         asteroid_id = self.asteroid_id_var.get().strip()
         if not asteroid_id:
             asteroid_id = "UNKNOWN"
+
+        rapports_dir = self._get_rapports_dir()
 
         def _build_map_from_observations(observations):
             positions_map = {}
@@ -3748,40 +4821,61 @@ class AsteroidPhotometryTab:
                     }
             return positions_map
 
-        # 1) Priorité absolue : extrapolation ZA0 (results/*_ZA0_extrapolated.csv)
+        # 1) Priorité absolue : extrapolation ZA0 (rapports/*_ZA0_extrapolated.csv)
         try:
-            results_dir = self._get_results_dir()
-            if results_dir is not None:
-                za0_path = results_dir / f"{asteroid_id}_ZA0_extrapolated.csv"
+            if rapports_dir is not None:
+                za0_path = rapports_dir / f"{asteroid_id}_ZA0_extrapolated.csv"
+                if not za0_path.exists():
+                    legacy_za = Path(self.directory) / "results" / f"{asteroid_id}_ZA0_extrapolated.csv"
+                    if legacy_za.exists():
+                        za0_path = legacy_za
                 if za0_path.exists():
                     df = pd.read_csv(za0_path)
                     obs = df.to_dict(orient='records')
                     positions_map = _build_map_from_observations(obs)
                     if positions_map:
                         logger.info(f"Positions ZA0 chargées : {len(positions_map)} images depuis {za0_path}")
-                        return positions_map
+                        return positions_map, None
                     logger.warning(f"Fichier ZA0 présent mais sans positions valides : {za0_path}")
         except Exception as e:
             logger.error(f"Erreur chargement positions ZA0 : {e}", exc_info=True)
 
         # 2) Fallback : archive JSON astrométrique classique
-        json_path = Path(self.directory) / "rapport" / f"{asteroid_id}_observations.json"
+        if rapports_dir is None:
+            return None, None
+        json_path = rapports_dir / f"{asteroid_id}_observations.json"
+        if not json_path.exists():
+            legacy_json = Path(self.directory) / "rapport" / f"{asteroid_id}_observations.json"
+            if legacy_json.exists():
+                json_path = legacy_json
         if not json_path.exists():
             logger.warning(f"Aucun fichier positions trouvé (ZA0/JSON). JSON absent : {json_path}")
-            return None
+            return None, None
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             observations = data.get('observations', [])
             if not observations:
-                logger.warning(f"Aucune observation dans {json_path}")
-                return None
+                msg = f"Aucune observation dans {json_path.name}."
+                logger.warning(msg)
+                return None, [msg]
+            ok_traj, traj_msgs = self._validate_observations_json_for_trajectory(data)
+            if not ok_traj:
+                logger.warning("JSON observations rejeté pour trajectoire batch : %s", traj_msgs)
+                return None, traj_msgs
             positions_map = _build_map_from_observations(observations)
-            logger.info(f"Positions astrométriques (fallback JSON) chargées : {len(positions_map)} images depuis {json_path}")
-            return positions_map if positions_map else None
+            if not positions_map:
+                msg = f"Aucune position RA/Dec exploitable dans {json_path.name}."
+                logger.warning(msg)
+                return None, [msg]
+            logger.info(
+                f"Positions astrométriques (fallback JSON) chargées : {len(positions_map)} images depuis {json_path}"
+            )
+            notes = traj_msgs if traj_msgs else None
+            return positions_map, notes
         except Exception as e:
             logger.error(f"Erreur chargement positions astrométriques JSON : {e}", exc_info=True)
-            return None
+            return None, [f"Lecture JSON impossible : {e}"]
     
     def run_photometry_batch(self):
         """Lance la photométrie en batch sur toutes les images."""
@@ -3798,9 +4892,27 @@ class AsteroidPhotometryTab:
             return
 
         # Mode sans éphémérides: autoriser la photométrie avec suivi astrométrique/ancres/fixe
-        astrometry_positions = self._load_astrometry_positions()
+        astrometry_positions, ades_json_notes = self._load_astrometry_positions()
         has_manual_anchors = bool(self.manual_t1_anchor_first and self.manual_t1_anchor_last)
         has_ephemerides = bool(self.ephemeris_data is not None)
+
+        if ades_json_notes is not None and astrometry_positions is None:
+            msg = (
+                "\n".join(ades_json_notes)
+                + "\n\n"
+                + self._MSG_TRAJECTOIRE_JSON_IMAGE_PAR_IMAGE
+            )
+            if has_ephemerides or has_manual_anchors:
+                messagebox.showwarning("Archive observations JSON", msg)
+            else:
+                messagebox.showerror("Archive observations JSON", msg)
+                return
+        elif ades_json_notes is not None and astrometry_positions is not None:
+            messagebox.showwarning(
+                "Archive observations JSON",
+                "\n".join(ades_json_notes),
+            )
+
         if not has_ephemerides and not astrometry_positions and not has_manual_anchors:
             proceed = messagebox.askyesno(
                 "Mode sans éphémérides",
@@ -3827,9 +4939,6 @@ class AsteroidPhotometryTab:
         def worker():
             try:
                 logger.info(f"Début photométrie batch sur {len(self.image_files)} images")
-                
-                # Charger les positions astrométriques depuis le JSON
-                astrometry_positions = self._load_astrometry_positions()
                 if astrometry_positions:
                     logger.info(f"Utilisation des positions astrométriques ADES pour suivre T1 ({len(astrometry_positions)} images)")
                 elif self.manual_t1_anchor_first and self.manual_t1_anchor_last:
@@ -3890,19 +4999,23 @@ class AsteroidPhotometryTab:
                         
                         # Vérifier que les colonnes nécessaires existent
                         if 'JD-UTC' in df.columns and 'rel_flux_T1_fn' in df.columns:
-                            # Créer le fichier light_curve.txt avec Time, Relative_flux_fn, relative_flux_fn_err
+                            # Courbe en magnitude différentielle (3 déc.) ; chargeur -> flux linéaire pour la modélisation
+                            _jd = df["JD-UTC"].to_numpy(dtype=float)
+                            _fn = df["rel_flux_T1_fn"].to_numpy(dtype=float)
+                            _fe = df["rel_flux_err_T1"].to_numpy(dtype=float) if "rel_flux_err_T1" in df.columns else None
+                            _mag, _me = relative_flux_to_differential_magnitude(_fn, _fe, normalize_median=False)
                             with open(light_curve_path, 'w', encoding='utf-8') as f:
-                                # En-tête
-                                f.write("Time Relative_flux_fn relative_flux_fn_err\n")
-                                
-                                # Données
-                                for idx, row in df.iterrows():
-                                    time = row['JD-UTC']
-                                    flux = row['rel_flux_T1_fn']
-                                    # L'erreur normalisée est dans rel_flux_err_T1 (déjà normalisée par process_photometry_series)
-                                    flux_err = row.get('rel_flux_err_T1', 0.0)
-                                    
-                                    f.write(f"{time:.6f} {flux:.6f} {flux_err:.6f}\n")
+                                f.write(LIGHT_CURVE_MAGNITUDE_HEADER)
+                                for i in range(len(df)):
+                                    if not np.isfinite(_jd[i]):
+                                        continue
+                                    m = float(_mag[i])
+                                    if not np.isfinite(m):
+                                        continue
+                                    if _me is not None and np.isfinite(_me[i]):
+                                        f.write(f"{_jd[i]:.6f} {m:.3f} {float(_me[i]):.3f}\n")
+                                    else:
+                                        f.write(f"{_jd[i]:.6f} {m:.3f} nan\n")
                             
                             logger.info(f"Fichier light_curve.txt généré : {light_curve_path}")
                         else:
@@ -3914,7 +5027,7 @@ class AsteroidPhotometryTab:
                 compiled_csv = None
                 try:
                     if result_path.exists():
-                        results_dir = self._get_results_dir()
+                        results_dir = self._get_rapports_dir()
                         if results_dir is not None:
                             asteroid_id = (self.asteroid_id_var.get() or "UNKNOWN").strip() or "UNKNOWN"
                             compiled_csv = results_dir / f"{asteroid_id}_photometrie_compilee.csv"
@@ -3923,9 +5036,15 @@ class AsteroidPhotometryTab:
                 except Exception as e:
                     logger.warning(f"Impossible d'exporter le CSV photométrie compilé : {e}")
 
-                self.frame.after(0, lambda: messagebox.showinfo("Succès", 
-                    f"Photométrie batch terminée !\n\nRésultats: {result_path}\nLight curve: {light_curve_path}"
-                    + (f"\nCSV compilé: {compiled_csv}" if compiled_csv else "")))
+                def _batch_ui_success():
+                    self.refresh_lightcurve_graphs(silent=True)
+                    messagebox.showinfo(
+                        "Succès",
+                        f"Photométrie batch terminée !\n\nRésultats: {result_path}\nLight curve: {light_curve_path}"
+                        + (f"\nCSV compilé: {compiled_csv}" if compiled_csv else ""),
+                    )
+
+                self.frame.after(0, _batch_ui_success)
 
             except Exception as e:
                 logger.error(f"Erreur photométrie batch: {e}", exc_info=True)
@@ -3938,7 +5057,7 @@ class AsteroidPhotometryTab:
         messagebox.showinfo("Info", f"Photométrie batch lancée en arrière-plan sur {len(self.image_files)} images")
 
     def run_photometry_single_image(self):
-        """Photométrie sur l'image courante (mode comètes, image par image)."""
+        """Photométrie sur l'image affichée dans la série (une image à la fois)."""
         if not self.current_image_path or self.current_data is None or self.wcs is None:
             messagebox.showerror("Erreur", "Chargez d'abord une image avec WCS valide.")
             return
@@ -3948,7 +5067,7 @@ class AsteroidPhotometryTab:
         if not self._ensure_photometry_gaia_settings():
             return
 
-        self._start_process_log_capture("photométrie image courante")
+        self._start_process_log_capture("photométrie image")
         try:
             data = self.current_data
             wcs = self.wcs
@@ -3971,6 +5090,39 @@ class AsteroidPhotometryTab:
                 "date_obs": header.get("DATE-OBS", header.get("DATE", "")),
                 "AIRMASS": float(header.get("AIRMASS", 1.0) or 1.0),
             }
+
+            # Une requête Gaia pour tout le champ (G jusqu’à max(21, limite UI)) sans cache :
+            # le cache astrométrie est souvent tronqué à G ≤ 18 et exclut des comparateurs plus faibles.
+            field_gaia_table = Table()
+            try:
+                center_fov, radius_fov = _compute_fov_center_and_radius_for_astrometry(
+                    wcs, data.shape
+                )
+                mag_lim_field = max(float(self.gaia_mag_limit_var.get()), 21.0)
+                tab_dr3 = optimized_query_gaia(
+                    center_fov,
+                    radius_fov,
+                    mag_limit=mag_lim_field,
+                    gaia_cache=self.gaia_cache,
+                    bypass_cache=True,
+                    row_limit=50_000,
+                )
+                tab_dr2 = query_gaia_dr2_vizier_box(
+                    center_fov,
+                    radius_fov,
+                    mag_limit=mag_lim_field,
+                    row_limit=50_000,
+                )
+                field_gaia_table = merge_gaia_dr3_dr2_photometry_field(
+                    tab_dr3, tab_dr2, dedup_arcsec=1.0
+                )
+                logger.info(
+                    "Photométrie image : champ Gaia fusion DR3+DR2 → %d étoiles (G ≤ %.1f).",
+                    len(field_gaia_table),
+                    mag_lim_field,
+                )
+            except Exception as e:
+                logger.warning("Photométrie image : requête Gaia champ échouée : %s", e)
 
             flux_t1 = 0.0
             err_t1_sq = 0.0
@@ -4045,7 +5197,11 @@ class AsteroidPhotometryTab:
                     flux_comps += net_flux
                     var_comps += flux_err ** 2
                     n_comps_valid += 1
-                    gaia_gmag = self._query_gaia_gmag_for_coord(coord)
+                    gaia_gmag = self._nearest_gaia_gmag_from_field_table(
+                        coord, field_gaia_table
+                    )
+                    if gaia_gmag is None:
+                        gaia_gmag = self._query_gaia_gmag_for_coord(coord)
                     if gaia_gmag is not None and np.isfinite(gaia_gmag):
                         comp_mag_data.append({
                             "label": label,
@@ -4067,6 +5223,16 @@ class AsteroidPhotometryTab:
             row["tot_C_cnts"] = float(flux_comps)
             row["rel_flux_T1"] = float(rel_flux)
             row["rel_flux_err_T1"] = float(rel_err)
+
+            n_comp_labels = sum(
+                1 for s in self.current_selections if str(s.get("label", "")).startswith("C")
+            )
+            if n_comp_labels > 0 and len(comp_mag_data) == 0:
+                logger.warning(
+                    "Photométrie image : aucune magnitude Gaia G pour les comparateurs "
+                    "(Vizier DR3 I/355, cone_search DR3, puis complément DR2 I/345). "
+                    "Vérifiez la connexion à Internet, le pare-feu, et que les étoiles sont dans Gaia DR3."
+                )
 
             # Magnitude T1 calibrée sur Gaia G via comparateurs
             mag_t1_g = np.nan
@@ -4099,9 +5265,9 @@ class AsteroidPhotometryTab:
             row["zp_std"] = float(zp_std) if np.isfinite(zp_std) else np.nan
 
             # Export CSV cumulatif (compilation progressive)
-            results_dir = self._get_results_dir()
+            results_dir = self._get_rapports_dir()
             if results_dir is None:
-                raise RuntimeError("Dossier results indisponible.")
+                raise RuntimeError("Dossier rapports indisponible.")
             asteroid_id = (self.asteroid_id_var.get() or "UNKNOWN").strip() or "UNKNOWN"
             out_csv = results_dir / f"{asteroid_id}_photometrie_image_par_image.csv"
 
@@ -4118,6 +5284,9 @@ class AsteroidPhotometryTab:
                 for c in cols_keep:
                     if c not in combined.columns:
                         combined[c] = np.nan
+                for _c in ("mag_T1_G", "rmsMag_T1", "delta-to_G"):
+                    if _c in combined.columns:
+                        combined[_c] = combined[_c].round(3)
                 combined = combined[cols_keep]
                 combined.to_csv(out_csv, index=False)
             else:
@@ -4126,6 +5295,9 @@ class AsteroidPhotometryTab:
                     if c not in row_df.columns:
                         row_df[c] = np.nan
                 row_df = row_df[cols_keep]
+                for _c in ("mag_T1_G", "rmsMag_T1", "delta-to_G"):
+                    if _c in row_df.columns:
+                        row_df[_c] = row_df[_c].round(3)
                 row_df.to_csv(out_csv, index=False)
 
             logger.info(f"Photométrie image enregistrée : {out_csv}")
@@ -4133,21 +5305,25 @@ class AsteroidPhotometryTab:
                 "Photométrie image",
                 (
                     f"Image traitée : {Path(self.current_image_path).name}\n"
-                    f"rel_flux_T1 = {rel_flux:.6f}\n"
                     + (
                         f"mag_T1(G) = {mag_t1_g:.3f} ± {rms_mag_t1:.3f}\n"
                         f"Δ(G-filtre) auto = {delta_auto:+.3f} mag\n"
+                        f"(flux rel. T1/C = {rel_flux:.6f})\n"
                         if np.isfinite(mag_t1_g)
-                        else "mag_T1(G) indisponible (comparateurs Gaia insuffisants)\n"
+                        else (
+                            f"mag_T1(G) indisponible : magnitudes Gaia G introuvables pour les comparateurs\n"
+                            f"(réseau / Vizier CDS / archive Gaia), ou flux comparateur non valide.\n"
+                            f"flux rel. T1/C = {rel_flux:.6f}\n"
+                        )
                     )
                     + f"CSV compilé : {out_csv}"
                 )
             )
         except Exception as e:
-            logger.error(f"Erreur photométrie image courante : {e}", exc_info=True)
+            logger.error(f"Erreur photométrie image : {e}", exc_info=True)
             messagebox.showerror("Erreur", f"Impossible de traiter l'image courante :\n{e}")
         finally:
-            self._stop_process_log_capture("photométrie image courante")
+            self._stop_process_log_capture("photométrie image")
 
     def _ensure_photometry_gaia_settings(self):
         """Demande le filtre utilisé. Le delta vers Gaia G est calculé automatiquement."""
@@ -4207,25 +5383,214 @@ class AsteroidPhotometryTab:
         self.photometry_delta_var.set(0.0)
         logger.info("Réglages Gaia réinitialisés : filtre=G, delta_to_G=0.000")
 
-    def _query_gaia_gmag_for_coord(self, coord, radius_arcsec=2.0):
-        """Retourne la magnitude Gaia G la plus proche d'une coordonnée."""
+    def _gaia_phot_g_mean_tap_cone(
+        self,
+        coord,
+        radius_arcsec=None,
+        gaia_table: str = "gaiadr3.gaia_source",
+    ):
+        """
+        phot_g_mean_mag via Gaia TAP (cone_search_async), comme match_sources_with_gaia
+        dans core/photometry_pipeline.py — indépendant de Vizier/CDS.
+        """
+        r = float(self.GAIA_MAG_TAP_CONE_ARCSEC if radius_arcsec is None else radius_arcsec)
+        c = coord.icrs if hasattr(coord, "icrs") else coord
+        saved = getattr(Gaia, "MAIN_GAIA_TABLE", "gaiadr3.gaia_source")
         try:
-            key = (round(float(coord.ra.deg), 6), round(float(coord.dec.deg), 6), round(float(radius_arcsec), 1))
+            Gaia.MAIN_GAIA_TABLE = gaia_table
+            job = Gaia.cone_search_async(c, radius=r * u.arcsec)
+            res = job.get_results()
+            if res is None or len(res) == 0:
+                return None
+            if "phot_g_mean_mag" not in res.colnames:
+                return None
+            # Toutes les lignes du cône sont à ≤ r″ ; petite marge pour arrondis.
+            return self._first_finite_gmag_nearest(
+                c,
+                res["ra"],
+                res["dec"],
+                res["phot_g_mean_mag"],
+                max_sep_arcsec=r + 1.0,
+            )
+        except Exception as e:
+            logger.debug("Gaia TAP %s : %s", gaia_table, e)
+            return None
+        finally:
+            Gaia.MAIN_GAIA_TABLE = saved
+
+    def _gaia_gmag_from_table_row(self, mag_cell):
+        """Extrait une magnitude G numérique (Vizier masqué / NaN → None)."""
+        if mag_cell is None:
+            return None
+        try:
+            if hasattr(mag_cell, "mask") and bool(mag_cell.mask):
+                return None
+        except Exception:
+            pass
+        try:
+            v = float(mag_cell)
+            return v if np.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    def _first_finite_gmag_nearest(self, coord, ra_col, dec_col, mag_col, max_sep_arcsec):
+        """Parmi les entrées triées par séparation, retourne la première magnitude G finie."""
+        try:
+            c = coord.icrs if hasattr(coord, "icrs") else coord
+            ctab = SkyCoord(ra=ra_col, dec=dec_col, unit=u.deg)
+            sep = np.asarray(c.separation(ctab).arcsec, dtype=float)
+            order = np.argsort(sep)
+            lim = float(max_sep_arcsec)
+            for j in order:
+                j = int(j)
+                if sep[j] > lim:
+                    break
+                g = self._gaia_gmag_from_table_row(mag_col[j])
+                if g is not None:
+                    return g
+        except Exception as e:
+            logger.debug("_first_finite_gmag_nearest : %s", e)
+        return None
+
+    def _nearest_gaia_gmag_from_field_table(self, coord, gaia_tab, max_sep_arcsec=None):
+        """Magnitude G depuis le tableau Gaia du champ (optimized_query_gaia)."""
+        if gaia_tab is None or len(gaia_tab) == 0:
+            return None
+        lim = (
+            float(self.GAIA_MAG_FIELD_MATCH_ARCSEC)
+            if max_sep_arcsec is None
+            else float(max_sep_arcsec)
+        )
+        try:
+            if "RA_ICRS" not in gaia_tab.colnames or "DE_ICRS" not in gaia_tab.colnames:
+                return None
+            if "Gmag" not in gaia_tab.colnames:
+                return None
+            return self._first_finite_gmag_nearest(
+                coord,
+                gaia_tab["RA_ICRS"],
+                gaia_tab["DE_ICRS"],
+                gaia_tab["Gmag"],
+                lim,
+            )
+        except Exception as e:
+            logger.debug("_nearest_gaia_gmag_from_field_table : %s", e)
+            return None
+
+    def _query_gaia_gmag_for_coord(self, coord, radius_arcsec=None):
+        """Retourne la magnitude Gaia G la plus proche d'une coordonnée (comparateurs)."""
+        try:
+            c = coord
+            if hasattr(c, "icrs"):
+                c = c.icrs
+            rcone = float(
+                self.GAIA_MAG_PERSTAR_CONE_ARCSEC if radius_arcsec is None else radius_arcsec
+            )
+            key = (round(float(c.ra.deg), 6), round(float(c.dec.deg), 6), round(rcone, 1))
             if key in self.photometry_gaia_mag_cache:
                 return self.photometry_gaia_mag_cache[key]
-            v = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], row_limit=20)
-            res = v.query_region(coord, radius=radius_arcsec * u.arcsec, catalog="I/355/gaiadr3")
-            if not res or len(res[0]) == 0:
-                self.photometry_gaia_mag_cache[key] = None
-                return None
-            tab = res[0]
-            ctab = SkyCoord(ra=tab["RA_ICRS"], dec=tab["DE_ICRS"], unit=u.deg)
-            idx = int(np.argmin(coord.separation(ctab).arcsec))
-            gmag = tab["Gmag"][idx] if "Gmag" in tab.colnames else None
-            gmag_val = float(gmag) if gmag is not None and np.isfinite(gmag) else None
-            self.photometry_gaia_mag_cache[key] = gmag_val
+
+            gmag_val = None
+
+            # 1) Vizier — recherche rectangulaire (même stratégie que optimized_query_gaia : le mode
+            #    circulaire radius= est souvent vide ou time-out côté CDS pour I/355/gaiadr3).
+            try:
+                radius_deg = max((rcone * u.arcsec).to(u.deg).value, 1e-6)
+                v = Vizier(row_limit=150)
+                res = v.query_region(
+                    c,
+                    width=2 * radius_deg * u.deg,
+                    height=2 * radius_deg * u.deg,
+                    catalog="I/355/gaiadr3",
+                )
+                if res and len(res[0]) > 0:
+                    tab = res[0]
+                    ra_col = "RA_ICRS" if "RA_ICRS" in tab.colnames else None
+                    de_col = "DE_ICRS" if "DE_ICRS" in tab.colnames else None
+                    mag_col = None
+                    for name in ("Gmag", "GMAG", "g_mag"):
+                        if name in tab.colnames:
+                            mag_col = name
+                            break
+                    if ra_col and de_col and mag_col:
+                        gmag_val = self._first_finite_gmag_nearest(
+                            c,
+                            tab[ra_col],
+                            tab[de_col],
+                            tab[mag_col],
+                            max_sep_arcsec=rcone + 1.0,
+                        )
+            except Exception as e:
+                logger.debug("Vizier (boîte) magnitude G comparateur : %s", e)
+
+            # 2) Archive Gaia TAP (cone) — prendre la 1re étoile avec G fini (pas seulement la plus proche géométrique si G est vide)
+            if gmag_val is None:
+                try:
+                    job = Gaia.cone_search_async(c, radius=rcone * u.arcsec)
+                    res = job.get_results()
+                    if res is not None and len(res) > 0 and "phot_g_mean_mag" in res.colnames:
+                        gmag_val = self._first_finite_gmag_nearest(
+                            c,
+                            res["ra"],
+                            res["dec"],
+                            res["phot_g_mean_mag"],
+                            max_sep_arcsec=rcone + 1.0,
+                        )
+                except Exception as e:
+                    logger.debug("Gaia cone_search magnitude G comparateur : %s", e)
+
+            # 3) Dernier recours : Vizier circulaire (certains miroirs seulement)
+            if gmag_val is None:
+                try:
+                    v2 = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], row_limit=80)
+                    res2 = v2.query_region(c, radius=rcone * u.arcsec, catalog="I/355/gaiadr3")
+                    if res2 and len(res2[0]) > 0:
+                        tab = res2[0]
+                        gmag_val = self._first_finite_gmag_nearest(
+                            c,
+                            tab["RA_ICRS"],
+                            tab["DE_ICRS"],
+                            tab["Gmag"],
+                            max_sep_arcsec=rcone + 1.0,
+                        )
+                except Exception as e:
+                    logger.debug("Vizier (cercle) magnitude G comparateur : %s", e)
+
+            # 4) Gaia DR2 (Vizier I/345/gaia2) — étoiles visibles ex. sous Gaia DR2 x WISE dans Aladin
+            if gmag_val is None:
+                try:
+                    radius_deg = max((rcone * u.arcsec).to(u.deg).value, 1e-6)
+                    vdr2 = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], row_limit=150)
+                    res_d2 = vdr2.query_region(
+                        c,
+                        width=2 * radius_deg * u.deg,
+                        height=2 * radius_deg * u.deg,
+                        catalog="I/345/gaia2",
+                    )
+                    if res_d2 and len(res_d2[0]) > 0:
+                        t2 = res_d2[0]
+                        gmag_val = self._first_finite_gmag_nearest(
+                            c,
+                            t2["RA_ICRS"],
+                            t2["DE_ICRS"],
+                            t2["Gmag"],
+                            max_sep_arcsec=rcone + 1.0,
+                        )
+                except Exception as e:
+                    logger.debug("Vizier Gaia DR2 (boîte) magnitude G comparateur : %s", e)
+
+            if gmag_val is not None:
+                self.photometry_gaia_mag_cache[key] = gmag_val
+            if gmag_val is None:
+                logger.debug(
+                    "Magnitude Gaia G introuvable pour RA=%.6f° Dec=%.6f° (rayon %.1f″).",
+                    float(c.ra.deg),
+                    float(c.dec.deg),
+                    rcone,
+                )
             return gmag_val
-        except Exception:
+        except Exception as e:
+            logger.debug("_query_gaia_gmag_for_coord : %s", e)
             return None
 
     def _load_photometry_magnitude_map(self):
@@ -4233,7 +5598,7 @@ class AsteroidPhotometryTab:
         if not self.directory:
             return {}
         asteroid_id = (self.asteroid_id_var.get() or "UNKNOWN").strip() or "UNKNOWN"
-        results_dir = self._get_results_dir()
+        results_dir = self._get_rapports_dir()
         if results_dir is None:
             return {}
         csv_path = results_dir / f"{asteroid_id}_photometrie_image_par_image.csv"
@@ -4318,225 +5683,1207 @@ class AsteroidPhotometryTab:
         done.wait()
         return out["value"]
 
-    def _open_lightcurve_modeling_window(self):
-        """Ouvre la fenêtre Modélisation & Inversion : charger courbe, périodogramme, modèle, ajustement."""
-        win = Toplevel(self.frame.winfo_toplevel())
-        win.title("Modélisation & Inversion - Courbe de lumière astéroïde")
-        win.geometry("900x720")
-        win.transient(self.frame.winfo_toplevel())
+    def _discover_default_lightcurve_path(self) -> str:
+        """Chemin vers light_curve.txt ou results.csv dans le dossier courant."""
+        if not self.directory:
+            return ""
+        base = Path(self.directory)
+        for sub in (
+            ("photometrie", "light_curve.txt"),
+            ("aligned", "photometrie", "light_curve.txt"),
+            ("science", "aligned", "photometrie", "light_curve.txt"),
+        ):
+            cand = base.joinpath(*sub)
+            if cand.is_file():
+                return str(cand.resolve())
+        for name in ("light_curve.txt", "results.csv"):
+            cand = base / "photometrie" / name
+            if cand.is_file():
+                return str(cand.resolve())
+        return ""
 
-        # Données chargées (dans la fenêtre)
-        lc_data = {"time": None, "flux": None, "flux_err": None}
-        period_best = {"value": None}
-        fit_result = {"P": None, "t0": None, "A": None, "F0": None}
+    def _apply_lc_per_mini_style(self):
+        """Police compacte pour le Lomb-Scargle (cadre 2, fenêtre mini)."""
+        ax = self.lc_ax_per
+        ax.tick_params(labelsize=6)
+        ax.xaxis.label.set_fontsize(7)
+        ax.yaxis.label.set_fontsize(7)
+        ax.title.set_fontsize(7)
 
-        # --- Fichier ---
-        file_frame = ttk.LabelFrame(win, text="1. Fichier courbe de lumière", padding=8)
-        file_frame.pack(fill=tk.X, padx=10, pady=5)
-        default_path = ""
+    def _clear_lightcurve_graph_axes(self):
+        """Réinitialise les axes des trois graphiques (état vide)."""
+        self.lc_ax_per.clear()
+        self.lc_ax_per.set_title("Lomb-Scargle")
+        self.lc_ax_per.set_xlabel("P (j)")
+        self.lc_ax_per.set_ylabel("Puiss.")
+        self._apply_lc_per_mini_style()
+        self.lc_ax_lc.clear()
+        self.lc_ax_lc.set_title("Courbe de lumière (temps)")
+        self.lc_ax_lc.set_xlabel("Temps (JD)")
+        self.lc_ax_lc.set_ylabel("Flux")
+        self.lc_ax_ph.clear()
+        self.lc_ax_ph.set_title("Courbe de phase")
+        self.lc_ax_ph.set_xlabel("Phase (0–1)")
+        self.lc_ax_ph.set_ylabel("Flux")
+        try:
+            self.lc_fig_lc.tight_layout()
+            self.lc_fig_per.tight_layout(pad=0.28)
+        except Exception:
+            pass
+        for cv in (getattr(self, "lc_canvas_per", None), getattr(self, "lc_canvas_lc", None)):
+            if cv is not None:
+                try:
+                    cv.draw_idle()
+                except Exception:
+                    pass
+
+    def refresh_lightcurve_graphs(self, silent: bool = False):
+        """Charge la courbe du dossier, Lomb-Scargle, modèle harmonique (N=3) ; met à jour les graphiques."""
+        parent_win = self.frame.winfo_toplevel()
+        path_str = self._discover_default_lightcurve_path()
+        if not path_str or not Path(path_str).is_file():
+            for k in self.lc_data:
+                self.lc_data[k] = None
+            for k in self.lc_raw_data:
+                self.lc_raw_data[k] = None
+            self._clear_lightcurve_graph_axes()
+            if not silent:
+                messagebox.showinfo(
+                    "Graphiques",
+                    "Aucune courbe trouvée (photometrie/light_curve.txt ou results.csv).",
+                    parent=parent_win,
+                )
+            return
+        path = Path(path_str)
+        try:
+            if path.suffix.lower() == ".csv":
+                df = pd.read_csv(path)
+                t_s, fl_s, fe_s = _dataframe_to_lc_series(df)
+                self._lc_commit_raw_series(t_s, fl_s, fe_s)
+            else:
+                jd, fl, fe = load_light_curve_txt(path)
+                self._lc_commit_raw_series(jd, fl, fe)
+        except Exception as e:
+            logger.exception("Chargement courbe pour graphiques: %s", e)
+            for k in self.lc_data:
+                self.lc_data[k] = None
+            for k in self.lc_raw_data:
+                self.lc_raw_data[k] = None
+            self._clear_lightcurve_graph_axes()
+            if not silent:
+                messagebox.showerror("Graphiques", f"Impossible de charger la courbe :\n{e}", parent=parent_win)
+            return
+
+        t_obs = np.asarray(self.lc_data["time"], dtype=float)
+        y_obs = np.asarray(self.lc_data["flux"], dtype=float)
+        y_err = self.lc_data["flux_err"]
+        if y_err is not None:
+            y_err = np.asarray(y_err, dtype=float)
+
+        min_per, max_per = 0.05, 20.0
+        span = float(np.ptp(t_obs)) if len(t_obs) else 0.0
+        max_per_use = max_per
+        if span > 0:
+            cap = max(min_per * 1.01, min(max_per, span * 3.0))
+            if cap < max_per - 1e-9:
+                max_per_use = cap
+
+        period = power = best = None
+        try:
+            period, power, best = run_lomb_scargle(t_obs, y_obs, min_period=min_per, max_period=max_per_use)
+            self.lc_period_best["value"] = best
+        except Exception as e:
+            logger.exception("Lomb-Scargle: %s", e)
+            self.lc_period_best["value"] = None
+            self.lc_ax_per.clear()
+            self.lc_ax_per.text(
+                0.5, 0.5, f"Lomb-Scargle indisponible\n{e}",
+                ha="center", va="center", fontsize=6, transform=self.lc_ax_per.transAxes,
+            )
+            self.lc_ax_per.set_title("Lomb-Scargle")
+            self.lc_ax_per.set_xlabel("P (j)")
+            self.lc_ax_per.set_ylabel("Puiss.")
+            self._apply_lc_per_mini_style()
+
+        if period is not None and power is not None and best is not None and np.isfinite(best) and best > 0:
+            self.lc_ax_per.clear()
+            self.lc_ax_per.plot(period, power, "b-", lw=0.7)
+            self.lc_ax_per.axvline(best, color="red", ls="--", label=f"P={best:.3f}")
+            self.lc_ax_per.set_xlabel("P (j)")
+            self.lc_ax_per.set_ylabel("Puiss.")
+            self.lc_ax_per.set_title("Lomb-Scargle")
+            self.lc_ax_per.legend(loc="upper right", fontsize=5)
+            self.lc_ax_per.grid(True, alpha=0.3)
+            self._apply_lc_per_mini_style()
+
+        if best is not None and np.isfinite(best) and best > 0:
+            P = float(best)
+        elif span > 0:
+            P = float(max(0.05, min(20.0, span * 0.3)))
+        else:
+            P = 0.5
+
+        f_mod = None
+        phase = None
+        n_h = 3
+        res_ls = fit_harmonic_series_wls(
+            t_obs, y_obs, y_err, P, n_harmonics=n_h, linear_drift=False,
+        )
+        if res_ls.get("success"):
+            f_mod = np.asarray(res_ls["y_model"], dtype=float)
+            t_ref = res_ls["t_ref"]
+            omega = res_ls["omega"]
+            alpha = res_ls["phase_shift_alpha"]
+            phi = omega * (t_obs - t_ref)
+            phase = np.mod(phi - alpha, 2.0 * np.pi) / (2.0 * np.pi)
+            t0_eq = res_ls["t0_equiv"]
+            med_fl = float(np.median(y_obs))
+            denom = max(abs(med_fl), 1e-9)
+            amp_r = res_ls["amplitude_R"]
+            a_approx = float(np.clip(amp_r / denom, 0.0, 20.0))
+            self.lc_fit_result.update({
+                "P": P,
+                "t0": t0_eq,
+                "A": a_approx,
+                "F0": med_fl,
+                "chi2": res_ls["chi2"],
+                "n_dof": res_ls["n_dof"],
+                "success": True,
+                "message": "Moindres carrés harmonique",
+            })
+        else:
+            logger.warning("Ajustement harmonique échoué : %s", res_ls.get("message"))
+            self.lc_fit_result.update({"success": False, "P": P, "t0": None, "A": None, "F0": None})
+            t0_med = float(np.median(t_obs))
+            phase = np.mod(t_obs - t0_med, P) / P if P > 0 else np.zeros_like(t_obs)
+
+        self.lc_ax_lc.clear()
+        self.lc_ax_lc.errorbar(
+            t_obs, y_obs, yerr=y_err, fmt="o", markersize=4, alpha=0.7, label="Observations", capsize=2,
+        )
+        if f_mod is not None:
+            self.lc_ax_lc.plot(t_obs, f_mod, "r-", lw=2, label="Modèle (Fourier)")
+        self.lc_ax_lc.set_xlabel("Temps (JD)")
+        self.lc_ax_lc.set_ylabel("Flux")
+        self.lc_ax_lc.legend(loc="upper right", fontsize=8)
+        self.lc_ax_lc.grid(True, alpha=0.3)
+        self.lc_ax_lc.set_title("Courbe de lumière (temps)")
+
+        self.lc_ax_ph.clear()
+        self.lc_ax_ph.errorbar(
+            phase, y_obs, yerr=y_err, fmt="o", markersize=4, alpha=0.7, label="Observations", capsize=2,
+        )
+        if f_mod is not None:
+            o_ph = np.argsort(phase)
+            self.lc_ax_ph.plot(phase[o_ph], f_mod[o_ph], "r-", lw=2, label="Modèle (Fourier)")
+        self.lc_ax_ph.set_xlabel("Phase (0–1)")
+        self.lc_ax_ph.set_ylabel("Flux")
+        self.lc_ax_ph.legend(loc="upper right", fontsize=8)
+        self.lc_ax_ph.grid(True, alpha=0.3)
+        self.lc_ax_ph.set_title("Courbe de phase")
+
+        try:
+            self.lc_fig_lc.tight_layout()
+            self.lc_fig_per.tight_layout(pad=0.28)
+        except Exception:
+            pass
+        if self.lc_canvas_per is not None:
+            self.lc_canvas_per.draw_idle()
+        if self.lc_canvas_lc is not None:
+            self.lc_canvas_lc.draw_idle()
+        # Synchroniser les champs du panneau si présents (ex. après photométrie batch)
+        if hasattr(self, "lc_P_var"):
+            try:
+                self.lc_P_var.set(f"{float(P):.6f}")
+            except Exception:
+                pass
+        if hasattr(self, "lc_per_result_var") and best is not None and np.isfinite(best):
+            self.lc_per_result_var.set(f"Période (auto) : {best:.6f} j")
+        fr = self.lc_fit_result
+        if hasattr(self, "lc_t0_var") and fr.get("t0") is not None:
+            try:
+                self.lc_t0_var.set(f"{float(fr['t0']):.6f}")
+            except Exception:
+                pass
+        if hasattr(self, "lc_A_var") and fr.get("A") is not None:
+            try:
+                self.lc_A_var.set(f"{float(fr['A']):.4f}")
+            except Exception:
+                pass
+        if hasattr(self, "lc_F0_var") and fr.get("F0") is not None:
+            try:
+                self.lc_F0_var.set(f"{float(fr['F0']):.6f}")
+            except Exception:
+                pass
+
+    def _lc_clear_publication_snapshot(self):
+        """Invalide le jeu publié (rechargement / détrendage / nouvelle série)."""
+        self.lc_publication_snapshot = None
+        if getattr(self, "lc_publication_status_var", None):
+            self.lc_publication_status_var.set(
+                "Aucune courbe validée — utilisez « Valider pour publication » dans l’onglet 2 (après analyse LC)."
+            )
+        try:
+            self.refresh_lc_publication_report()
+        except Exception:
+            pass
+
+    def refresh_lc_publication_report(self):
+        """Met à jour le texte du rapport ALCDEF / soumission (onglet Publication)."""
+        box = getattr(self, "lc_report_box", None)
+        if box is None or not hasattr(self, "lc_norm_med_var"):
+            return
+        sn = self.lc_publication_snapshot
+        if sn is None:
+            box.delete("1.0", tk.END)
+            box.insert(
+                tk.END,
+                "Aucun jeu validé pour publication.\n\n"
+                "Dans l’onglet « 2. Photométrie », après détrendage / période / modèle, "
+                "cliquez sur « Valider pour publication » : le fichier {ID}_asteroid_model.txt est enregistré "
+                "et les exports ALCDEF utilisent ce jeu figé.\n",
+            )
+            return
+        t = sn["time"]
+        fl = sn["flux"]
+        fe = sn["flux_err"]
+        mag, mag_e = relative_flux_to_differential_magnitude(
+            fl,
+            fe,
+            normalize_median=self.lc_norm_med_var.get(),
+        )
+        fit_snap = sn.get("fit") or {}
+        fd = {k: fit_snap.get(k) for k in ("P", "t0", "A", "F0", "chi2", "n_dof", "success")}
+        text = build_submission_report_lines(
+            t,
+            fl,
+            fe,
+            mag,
+            mag_e,
+            self._lc_report_meta_from_gui(),
+            fit=fd if fit_snap.get("success") else None,
+        )
+        hdr = f"=== Jeu validé : {sn.get('model_path', '')} ===\n\n"
+        box.delete("1.0", tk.END)
+        box.insert(tk.END, hdr + text)
+
+    def _lc_commit_raw_series(self, t, fl, fe):
+        """Enregistre la série brute et recalcule lc_data avec le détrendage courant."""
+        t = np.asarray(t, dtype=float)
+        fl = np.asarray(fl, dtype=float)
+        fe = np.asarray(fe, dtype=float) if fe is not None else None
+        self.lc_raw_data["time"] = t.copy()
+        self.lc_raw_data["flux"] = fl.copy()
+        self.lc_raw_data["flux_err"] = fe.copy() if fe is not None else None
+        self._lc_apply_detrend_to_working()
+
+    def _lc_apply_detrend_to_working(self):
+        """lc_data ← lc_raw_data après détrendage (méthode UI)."""
+        if self.lc_raw_data["time"] is None:
+            return
+        self._lc_clear_publication_snapshot()
+        combo = getattr(self, "lc_detrend_combo", None)
+        label = combo.get() if combo is not None else "Aucun"
+        method_key = getattr(self, "_lc_detrend_label_to_key", {}).get(label, "none")
+        wl_sg = None
+        v_sg = getattr(self, "lc_detrend_savgol_wl_var", None)
+        if v_sg is not None:
+            raw_sg = v_sg.get().strip()
+            if raw_sg:
+                try:
+                    wl_sg = int(raw_sg)
+                except ValueError:
+                    wl_sg = None
+        wl_w = None
+        v_w = getattr(self, "lc_detrend_wotan_wl_var", None)
+        if v_w is not None:
+            raw_w = v_w.get().strip()
+            if raw_w:
+                try:
+                    wl_w = float(raw_w)
+                except ValueError:
+                    wl_w = None
+        try:
+            t, f, fe, msg = detrend_asteroid_lc(
+                self.lc_raw_data["time"],
+                self.lc_raw_data["flux"],
+                self.lc_raw_data["flux_err"],
+                method_key,
+                savgol_window_points=wl_sg,
+                wotan_window_days=wl_w,
+            )
+        except Exception as e:
+            logger.exception("Détrendage LC: %s", e)
+            messagebox.showwarning("Détrendage", f"Échec du détrendage — affichage des données brutes.\n{e}")
+            t = self.lc_raw_data["time"].copy()
+            f = self.lc_raw_data["flux"].copy()
+            fe = self.lc_raw_data["flux_err"].copy() if self.lc_raw_data["flux_err"] is not None else None
+            msg = "Erreur — données brutes."
+        self.lc_data["time"] = t
+        self.lc_data["flux"] = f
+        self.lc_data["flux_err"] = fe
+        if getattr(self, "lc_detrend_status_var", None):
+            self.lc_detrend_status_var.set(msg)
+
+    def _lc_publication_id_token(self) -> str:
+        aid = ""
+        if hasattr(self, "asteroid_id_var"):
+            aid = (self.asteroid_id_var.get() or "").strip()
+        if not aid and hasattr(self, "lc_asteroid_num_var"):
+            aid = (self.lc_asteroid_num_var.get() or "").strip()
+        safe = re.sub(r"[^\w\-.]+", "_", aid) if aid else ""
+        return (safe[:80] if safe else "UNKNOWN").strip("_") or "UNKNOWN"
+
+    def _lc_validate_for_publication(self):
+        """
+        Figée la courbe + paramètres de modèle courants, écrit {ID}_asteroid_model.txt,
+        alimente l’onglet 3. Publication et bascule sur cet onglet.
+        """
+        top = self.frame.winfo_toplevel()
+        if self.lc_data["time"] is None or self.lc_data["flux"] is None:
+            messagebox.showwarning("Publication", "Chargez et traitez d’abord une courbe (onglet 2).", parent=top)
+            return
+        n = len(self.lc_data["time"])
+        if n < 2:
+            messagebox.showwarning("Publication", "Au moins 2 points sont requis.", parent=top)
+            return
+
+        tid = self._lc_publication_id_token()
+        out_dir = None
         if self.directory:
-            for name in ("light_curve.txt", "results.csv"):
-                p = Path(self.directory) / "photometrie" / name
-                if p.exists():
-                    default_path = str(p)
-                    break
-        path_var = tk.StringVar(value=default_path)
-        ttk.Entry(file_frame, textvariable=path_var, width=70).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+            out_dir = Path(self.directory) / "results"
+        else:
+            raw = (self.lc_path_var.get() or "").strip() if hasattr(self, "lc_path_var") else ""
+            if raw:
+                p = Path(raw)
+                if p.is_file():
+                    out_dir = p.parent / "results"
+        if out_dir is None:
+            out_dir = filedialog.askdirectory(
+                parent=top,
+                title="Dossier pour enregistrer le fichier modèle (ex. …/results)",
+            )
+            if not out_dir:
+                return
+            out_dir = Path(out_dir)
+
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("Publication", f"Impossible de créer le dossier :\n{e}", parent=top)
+            return
+
+        path = out_dir / f"{tid}_asteroid_model.txt"
+        t = np.asarray(self.lc_data["time"], dtype=float)
+        fl = np.asarray(self.lc_data["flux"], dtype=float)
+        fe = self.lc_data["flux_err"]
+        fe = np.asarray(fe, dtype=float) if fe is not None else None
+
+        detrend_lbl = ""
+        if getattr(self, "lc_detrend_combo", None) is not None:
+            detrend_lbl = self.lc_detrend_combo.get()
+
+        fit_copy: dict = {}
+        for k in ("P", "t0", "A", "F0", "chi2", "n_dof", "success", "message"):
+            v = self.lc_fit_result.get(k)
+            if v is None:
+                fit_copy[k] = None
+                continue
+            if hasattr(v, "item"):
+                try:
+                    fit_copy[k] = v.item()
+                except Exception:
+                    fit_copy[k] = v
+            elif isinstance(v, (float, int, bool, str)):
+                fit_copy[k] = v
+            else:
+                try:
+                    fit_copy[k] = float(v)
+                except (TypeError, ValueError):
+                    fit_copy[k] = str(v)
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [
+            "# NPOAP — courbe validée pour publication (ALCDEF)",
+            f"# asteroid_id_token: {tid}",
+            f"# validated_utc: {ts}",
+            f"# n_points: {n}",
+            f"# detrend_gui: {detrend_lbl}",
+        ]
+        for k in ("P", "t0", "A", "F0", "chi2", "n_dof", "success"):
+            if fit_copy.get(k) is not None:
+                lines.append(f"# fit_{k}: {fit_copy[k]}")
+        if fit_copy.get("message"):
+            lines.append(f"# fit_message: {fit_copy['message']}")
+        lines.append("# colonnes: JD_UTC flux flux_err")
+        body_meta = "\n".join(lines) + "\n"
+
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as f_out:
+                f_out.write(body_meta)
+                if fe is not None:
+                    for i in range(n):
+                        f_out.write(f"{t[i]:.9f} {fl[i]:.9g} {fe[i]:.9g}\n")
+                else:
+                    for i in range(n):
+                        f_out.write(f"{t[i]:.9f} {fl[i]:.9g}\n")
+        except OSError as e:
+            messagebox.showerror("Publication", f"Écriture impossible :\n{e}", parent=top)
+            return
+
+        self.lc_publication_snapshot = {
+            "time": t.copy(),
+            "flux": fl.copy(),
+            "flux_err": fe.copy() if fe is not None else None,
+            "fit": fit_copy,
+            "model_path": str(path),
+            "validated_at": ts,
+            "detrend_label": detrend_lbl,
+        }
+        if getattr(self, "lc_publication_status_var", None):
+            self.lc_publication_status_var.set(
+                f"Jeu actif : {path.name} — {n} points (UTC {ts}). Exports ALCDEF ci-dessous."
+            )
+        try:
+            self.refresh_lc_publication_report()
+        except Exception:
+            logger.exception("Rapport après validation publication")
+        nb = getattr(self, "_asteroid_workflow_notebook", None)
+        if nb is not None:
+            try:
+                nb.select(2)
+            except tk.TclError:
+                pass
+        messagebox.showinfo(
+            "Publication",
+            f"Courbe validée.\n\nFichier modèle :\n{path}\n\nL’onglet « 3. Publication » est alimenté avec ce jeu.",
+            parent=top,
+        )
+
+    def _lc_report_meta_from_gui(self) -> ReportMeta:
+        return ReportMeta(
+            asteroid_number=self.lc_asteroid_num_var.get().strip(),
+            asteroid_name=self.lc_asteroid_name_var.get().strip(),
+            observers=self.lc_observers_var.get().strip(),
+            telescope=self.lc_telescope_var.get().strip(),
+            instrument=self.lc_instrument_var.get().strip(),
+            filter_name=self.lc_filter_meta_var.get().strip(),
+            mag_band=self.lc_magband_var.get().strip(),
+            mpc_code=self.lc_mpc_code_var.get().strip(),
+            comment=self.lc_comment_meta_var.get().strip(),
+        )
+
+    def _build_publication_panel(self, parent):
+        """Onglet 3 : export S-ALCDEF, métadonnées et rapport de soumission (données = courbe chargée en photométrie)."""
+        top = self.frame.winfo_toplevel()
+        outer = ttk.Frame(parent)
+        outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.lc_publication_status_var = tk.StringVar(
+            value="Aucune courbe validée — utilisez « Valider pour publication » dans l’onglet 2 (après analyse LC)."
+        )
+        ttk.Label(
+            outer,
+            textvariable=self.lc_publication_status_var,
+            wraplength=720,
+            justify=tk.LEFT,
+            font=("Helvetica", 9, "bold"),
+            foreground="#0a5c0a",
+        ).pack(anchor="w", pady=(0, 6))
+
+        ttk.Label(
+            outer,
+            text=(
+                "Les exports ALCDEF ci-dessous utilisent uniquement le dernier jeu validé "
+                "(fichier {ID}_asteroid_model.txt créé dans l’onglet 2). "
+                "Recharger ou modifier la courbe / le détrendage invalide la validation."
+            ),
+            wraplength=720,
+            justify=tk.LEFT,
+            font=("Helvetica", 9),
+        ).pack(anchor="w", pady=(0, 8))
+
+        export_frame = ttk.LabelFrame(outer, text="Export ALCDEF (S-ALCDEF) et rapport", padding=6)
+        meta_grid = ttk.Frame(export_frame)
+        meta_grid.pack(fill=tk.X)
+        self.lc_asteroid_num_var = tk.StringVar(value=(self.asteroid_id_var.get() if hasattr(self, "asteroid_id_var") else "").strip())
+        self.lc_asteroid_name_var = tk.StringVar(value="")
+        self.lc_observers_var = tk.StringVar(value="")
+        self.lc_mpc_code_var = tk.StringVar(value="")
+        self.lc_telescope_var = tk.StringVar(value="")
+        self.lc_instrument_var = tk.StringVar(value="")
+        self.lc_filter_meta_var = tk.StringVar(value="")
+        self.lc_magband_var = tk.StringVar(value="")
+        self.lc_comment_meta_var = tk.StringVar(value="")
+        self.lc_norm_med_var = tk.BooleanVar(value=False)
+
+        r_ = 0
+        ttk.Label(meta_grid, text="N° MPC:").grid(row=r_, column=0, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_asteroid_num_var, width=10).grid(row=r_, column=1, sticky="w", padx=2)
+        ttk.Label(meta_grid, text="Nom:").grid(row=r_, column=2, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_asteroid_name_var, width=22).grid(row=r_, column=3, sticky="ew", padx=2)
+        r_ += 1
+        ttk.Label(meta_grid, text="Observateurs:").grid(row=r_, column=0, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_observers_var, width=55).grid(row=r_, column=1, columnspan=3, sticky="ew", padx=2)
+        r_ += 1
+        ttk.Label(meta_grid, text="Code MPC:").grid(row=r_, column=0, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_mpc_code_var, width=10).grid(row=r_, column=1, sticky="w", padx=2)
+        ttk.Label(meta_grid, text="Filtre:").grid(row=r_, column=2, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_filter_meta_var, width=12).grid(row=r_, column=3, sticky="w", padx=2)
+        r_ += 1
+        ttk.Label(meta_grid, text="MagBand:").grid(row=r_, column=0, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_magband_var, width=10).grid(row=r_, column=1, sticky="w", padx=2)
+        ttk.Label(meta_grid, text="(ex. V Rc Ic G pour ALCDEF)").grid(row=r_, column=2, columnspan=2, sticky="w", padx=2)
+        r_ += 1
+        ttk.Label(meta_grid, text="Télescope:").grid(row=r_, column=0, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_telescope_var, width=24).grid(row=r_, column=1, sticky="w", padx=2)
+        ttk.Label(meta_grid, text="Détecteur:").grid(row=r_, column=2, sticky="w", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_instrument_var, width=20).grid(row=r_, column=3, sticky="w", padx=2)
+        r_ += 1
+        ttk.Label(meta_grid, text="Commentaire:").grid(row=r_, column=0, sticky="nw", padx=2)
+        ttk.Entry(meta_grid, textvariable=self.lc_comment_meta_var, width=55).grid(row=r_, column=1, columnspan=3, sticky="ew", padx=2)
+        meta_grid.columnconfigure(3, weight=1)
+
+        opt_fr = ttk.Frame(export_frame)
+        opt_fr.pack(fill=tk.X, pady=4)
+        ttk.Checkbutton(
+            opt_fr,
+            text="Normaliser les flux par la médiane avant conversion mag (Δmag ~ centrés)",
+            variable=self.lc_norm_med_var,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            opt_fr,
+            text="Ouvrir alcdef.org (Simple ALCDEF)",
+            command=lambda: webbrowser.open("https://alcdef.org/php/alcdef_SimpleUpload.php"),
+        ).pack(side=tk.RIGHT, padx=2)
+
+        self.lc_report_box = scrolledtext.ScrolledText(export_frame, wrap=tk.WORD, height=12, font=("Consolas", 8))
+        self.lc_report_box.pack(fill=tk.BOTH, expand=True, pady=4)
+
+        def _save_simple_alcdef():
+            sn = self.lc_publication_snapshot
+            if sn is None:
+                messagebox.showwarning(
+                    "ALCDEF",
+                    "Validez d’abord la courbe dans l’onglet « 2. Photométrie » (bouton « Valider pour publication »).",
+                    parent=top,
+                )
+                return
+            path = filedialog.asksaveasfilename(
+                parent=top,
+                title="Enregistrer S-ALCDEF",
+                defaultextension=".txt",
+                filetypes=[("Texte ALCDEF / S-ALCDEF", "*.txt"), ("Tous les fichiers", "*.*")],
+            )
+            if not path:
+                return
+            t_sn = sn["time"]
+            fl_sn = sn["flux"]
+            fe_sn = sn["flux_err"]
+            mag, mag_e = relative_flux_to_differential_magnitude(
+                fl_sn,
+                fe_sn,
+                normalize_median=self.lc_norm_med_var.get(),
+            )
+            meta = self._lc_report_meta_from_gui()
+            comments = [
+                f"Objet: {meta.asteroid_number} {meta.asteroid_name}".strip(),
+                f"Observateurs: {meta.observers}" if meta.observers else "",
+                f"Filtre / MagBand (prévu formulaire): {meta.filter_name} / {meta.mag_band}",
+                f"Site / code: {meta.mpc_code}" if meta.mpc_code else "",
+                f"Modèle validé NPOAP: {sn.get('model_path', '')}",
+            ]
+            comments = [c for c in comments if c]
+            body = build_simple_alcdef_text(
+                t_sn,
+                mag,
+                mag_e,
+                delimiter="|",
+                comment_lines=comments or None,
+            )
+            try:
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(body)
+                messagebox.showinfo("ALCDEF", f"Fichier enregistré :\n{path}\nVérifiez-le avec ALCDEFVerify sur alcdef.org.")
+            except OSError as e:
+                messagebox.showerror("Erreur", str(e))
+
+        btn_fr = ttk.Frame(export_frame)
+        btn_fr.pack(fill=tk.X)
+        ttk.Button(btn_fr, text="Actualiser le rapport", command=self.refresh_lc_publication_report).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_fr, text="Enregistrer S-ALCDEF…", command=_save_simple_alcdef).pack(side=tk.LEFT, padx=2)
+
+        export_frame.pack(fill=tk.BOTH, expand=True)
+
+    def _build_lightcurve_modeling_panel(self, parent):
+        """Modélisation courbe : fichier, Lomb-Scargle, paramètres / Fourier, graphiques (export ALCDEF → onglet 3)."""
+        top = self.frame.winfo_toplevel()
+
+        # Figure Lomb-Scargle réduite (affichée dans le cadre 2)
+        self.lc_fig_per = Figure(figsize=(2.45, 1.0))
+        self.lc_ax_per = self.lc_fig_per.add_subplot(111)
+        self.lc_fig_lc = Figure(figsize=(7.0, 6.0))
+        self.lc_ax_lc = self.lc_fig_lc.add_subplot(211)
+        self.lc_ax_ph = self.lc_fig_lc.add_subplot(212)
+
+        default_path = self._discover_default_lightcurve_path()
+
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(3, weight=1)
+
+        # --- 1. Fichier (compact, une ligne de saisie + statut) ---
+        file_frame = ttk.LabelFrame(parent, text="1. Fichier courbe de lumière", padding=(6, 4))
+        file_frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 2))
+        self.lc_path_var = tk.StringVar(value=default_path)
+        _f1_bar = ttk.Frame(file_frame)
+        _f1_bar.pack(fill=tk.X)
+        ttk.Entry(_f1_bar, textvariable=self.lc_path_var, width=6).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+
+        def _initial_dir_for_dialog() -> str:
+            raw = self.lc_path_var.get().strip()
+            if raw:
+                pr = Path(raw)
+                if pr.is_dir():
+                    return str(pr)
+                if pr.parent.is_dir():
+                    return str(pr.parent)
+            if self.directory:
+                return str(Path(self.directory))
+            return ""
+
+        def _ask_lc_path(title: str):
+            idir = _initial_dir_for_dialog()
+            opts = dict(
+                parent=top,
+                title=title,
+                filetypes=[
+                    ("Courbes de lumière", "*.txt *.csv"),
+                    ("Fichier light_curve", "light_curve.txt"),
+                    ("Tous les fichiers", "*.*"),
+                ],
+            )
+            if idir:
+                opts["initialdir"] = idir
+            return filedialog.askopenfilename(**opts)
+
+        def browse_file():
+            fname = _ask_lc_path("Choisir un fichier de courbe de lumière")
+            if fname:
+                self.lc_path_var.set(fname)
+
+        ttk.Button(_f1_bar, text="Parcourir…", command=browse_file).pack(side=tk.LEFT, padx=2)
 
         def load_file():
-            path = path_var.get().strip()
-            if not path or not Path(path).exists():
-                messagebox.showwarning("Attention", "Fichier invalide ou absent.")
-                return
-            path = Path(path)
+            path_str = self.lc_path_var.get().strip()
+            p = Path(path_str) if path_str else None
+            if not path_str or p is None or not p.is_file():
+                fname = _ask_lc_path("Choisir le fichier de courbe à charger")
+                if not fname:
+                    return
+                self.lc_path_var.set(fname)
+                path_str = fname
+                p = Path(path_str)
+            path = p
             try:
                 if path.suffix.lower() == ".csv":
                     df = pd.read_csv(path)
-                    time_col = next((c for c in ["JD-UTC", "JD_UTC", "time", "Time"] if c in df.columns), None)
-                    flux_col = next((c for c in ["rel_flux_T1_fn", "flux", "rel_flux"] if c in df.columns), None)
-                    err_col = next((c for c in ["rel_flux_err_T1", "flux_err", "err"] if c in df.columns), None)
-                    if time_col is None or flux_col is None:
-                        messagebox.showerror("Erreur", "CSV doit contenir JD-UTC (ou time) et rel_flux_T1_fn (ou flux).")
+                    try:
+                        t, fl, fe = _dataframe_to_lc_series(df)
+                    except ValueError as ve:
+                        messagebox.showerror("Erreur", f"CSV courbe invalide :\n{ve}")
                         return
-                    lc_data["time"] = np.array(df[time_col], dtype=float)
-                    lc_data["flux"] = np.array(df[flux_col], dtype=float)
-                    lc_data["flux_err"] = np.array(df[err_col], dtype=float) if err_col else None
+                    self._lc_commit_raw_series(t, fl, fe)
                 else:
-                    # light_curve.txt : Time Relative_flux_fn relative_flux_fn_err
-                    data = np.loadtxt(path)
-                    if data.ndim == 1:
-                        data = data.reshape(-1, 1)
-                    lc_data["time"] = data[:, 0]
-                    lc_data["flux"] = data[:, 1]
-                    lc_data["flux_err"] = data[:, 2] if data.shape[1] >= 3 else None
-                n = len(lc_data["time"])
-                lc_data["time"] = np.asarray(lc_data["time"])
-                lc_data["flux"] = np.asarray(lc_data["flux"])
-                if lc_data["flux_err"] is not None:
-                    lc_data["flux_err"] = np.asarray(lc_data["flux_err"])
-                status_var.set(f"Chargé : {n} points")
-                _refresh_plots()
+                    jd, fl, fe = load_light_curve_txt(path)
+                    self._lc_commit_raw_series(jd, fl, fe)
+                n = len(self.lc_data["time"])
+                self.lc_status_var.set(f"Chargé : {n} points")
+                try:
+                    _refresh_plots()
+                except Exception as pe:
+                    logger.exception("Tracé courbe après chargement: %s", pe)
+                    messagebox.showwarning(
+                        "Tracé",
+                        f"Fichier chargé ({n} pts) mais le graphique a échoué :\n{pe}",
+                    )
             except Exception as e:
                 logger.exception("Chargement courbe: %s", e)
                 messagebox.showerror("Erreur", f"Impossible de charger : {e}")
 
-        ttk.Button(file_frame, text="Charger", command=load_file).pack(side=tk.LEFT, padx=2)
-        status_var = tk.StringVar(value="")
-        ttk.Label(file_frame, textvariable=status_var, font=("Helvetica", 9)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(_f1_bar, text="Charger", command=load_file).pack(side=tk.LEFT, padx=2)
+        self.lc_status_var = tk.StringVar(value="")
+        _lc_status_lbl = ttk.Label(
+            file_frame,
+            textvariable=self.lc_status_var,
+            font=("Helvetica", 8),
+            wraplength=400,
+            justify=tk.LEFT,
+        )
 
-        # --- Périodogramme ---
-        per_frame = ttk.LabelFrame(win, text="2. Périodogramme (Lomb-Scargle)", padding=8)
-        per_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(per_frame, text="P min (j):").pack(side=tk.LEFT, padx=2)
-        min_per_var = tk.StringVar(value="0.05")
-        ttk.Entry(per_frame, textvariable=min_per_var, width=8).pack(side=tk.LEFT, padx=2)
-        ttk.Label(per_frame, text="P max (j):").pack(side=tk.LEFT, padx=2)
-        max_per_var = tk.StringVar(value="20.0")
-        ttk.Entry(per_frame, textvariable=max_per_var, width=8).pack(side=tk.LEFT, padx=2)
+        def _lc_file_status_wrap(_ev=None):
+            try:
+                w = int(file_frame.winfo_width())
+                if w > 48:
+                    _lc_status_lbl.configure(wraplength=max(200, w - 24))
+            except tk.TclError:
+                pass
+
+        file_frame.bind("<Configure>", _lc_file_status_wrap, add=True)
+        _lc_status_lbl.pack(fill=tk.X, padx=2, pady=(2, 0), anchor=tk.W)
+
+        # --- Détrendage lent (séries longues) ---
+        detrend_frame = ttk.LabelFrame(parent, text="Détrendage (sur données brutes du fichier)", padding=(6, 4))
+        detrend_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 2))
+        _dt_row = ttk.Frame(detrend_frame)
+        _dt_row.pack(fill=tk.X)
+        ttk.Label(_dt_row, text="Méthode :").pack(side=tk.LEFT, padx=(0, 4))
+        _lc_methods = list_detrend_methods()
+        self._lc_detrend_label_to_key = {lab: key for key, lab in _lc_methods}
+        _lc_method_labels = [lab for _key, lab in _lc_methods]
+        self.lc_detrend_combo = ttk.Combobox(
+            _dt_row,
+            values=_lc_method_labels,
+            width=38,
+            state="readonly",
+        )
+        self.lc_detrend_combo.pack(side=tk.LEFT, padx=2)
+        if _lc_method_labels:
+            self.lc_detrend_combo.set(_lc_method_labels[0])
+        self.lc_detrend_savgol_wl_var = tk.StringVar(value="")
+        self.lc_detrend_wotan_wl_var = tk.StringVar(value="")
+        ttk.Label(_dt_row, text="SG pts:").pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Entry(_dt_row, textvariable=self.lc_detrend_savgol_wl_var, width=5).pack(side=tk.LEFT, padx=0)
+        ttk.Label(_dt_row, text="Wōtan j:").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Entry(_dt_row, textvariable=self.lc_detrend_wotan_wl_var, width=7).pack(side=tk.LEFT, padx=0)
+
+        self.lc_detrend_status_var = tk.StringVar(value="")
+
+        def _lc_apply_detrend_clicked():
+            if self.lc_raw_data["time"] is None:
+                messagebox.showwarning("Détrendage", "Chargez d'abord une courbe de lumière.")
+                return
+            self._lc_apply_detrend_to_working()
+            try:
+                _refresh_plots()
+            except Exception as pe:
+                logger.exception("Tracé après détrendage: %s", pe)
+
+        ttk.Button(_dt_row, text="Appliquer", command=_lc_apply_detrend_clicked).pack(side=tk.LEFT, padx=8)
+        ttk.Label(detrend_frame, textvariable=self.lc_detrend_status_var, font=("Helvetica", 8), foreground="gray").pack(
+            anchor="w", padx=2, pady=(2, 0)
+        )
+
+        # --- Ligne 3 : périodogramme + modèle (côte à côte) ---
+        lc_mid = ttk.Frame(parent)
+        lc_mid.grid(row=2, column=0, sticky="nsew", padx=0, pady=(0, 2))
+        lc_mid.columnconfigure(0, weight=1, uniform="lc_mid")
+        lc_mid.columnconfigure(1, weight=1, uniform="lc_mid")
+
+        # --- 2. Périodogramme ---
+        per_frame = ttk.LabelFrame(lc_mid, text="2. Périodogramme (Lomb-Scargle)", padding=6)
+        per_frame.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=0)
+        _per_r1 = ttk.Frame(per_frame)
+        _per_r1.pack(fill=tk.X)
+        ttk.Label(_per_r1, text="P min (j):").pack(side=tk.LEFT, padx=2)
+        self.lc_min_per_var = tk.StringVar(value="0.05")
+        ttk.Entry(_per_r1, textvariable=self.lc_min_per_var, width=7).pack(side=tk.LEFT, padx=2)
+        ttk.Label(_per_r1, text="P max (j):").pack(side=tk.LEFT, padx=2)
+        self.lc_max_per_var = tk.StringVar(value="20.0")
+        ttk.Entry(_per_r1, textvariable=self.lc_max_per_var, width=7).pack(side=tk.LEFT, padx=2)
 
         def run_periodogram():
-            if lc_data["time"] is None or lc_data["flux"] is None:
+            if self.lc_data["time"] is None or self.lc_data["flux"] is None:
                 messagebox.showwarning("Attention", "Chargez d'abord un fichier.")
                 return
             try:
-                min_per = float(min_per_var.get())
-                max_per = float(max_per_var.get())
+                min_per = float(self.lc_min_per_var.get())
+                max_per = float(self.lc_max_per_var.get())
             except ValueError:
                 messagebox.showwarning("Attention", "P min et P max doivent être des nombres.")
                 return
-            period, power, best = run_lomb_scargle(lc_data["time"], lc_data["flux"], min_period=min_per, max_period=max_per)
-            period_best["value"] = best
-            per_result_var.set(f"Période retenue : {best:.6f} j")
-            ax_per.clear()
-            ax_per.plot(period, power, "b-", lw=0.8)
-            ax_per.axvline(best, color="red", ls="--", label=f"P = {best:.4f} j")
-            ax_per.set_xlabel("Période (j)")
-            ax_per.set_ylabel("Puissance")
-            ax_per.set_title("Lomb-Scargle")
-            ax_per.legend(loc="upper right", fontsize=8)
-            ax_per.grid(True, alpha=0.3)
-            P_var.set(f"{best:.6f}")
-            fig_per.canvas.draw_idle()
+            if min_per <= 0 or max_per <= 0:
+                messagebox.showwarning("Attention", "P min et P max doivent être > 0.")
+                return
+            if min_per >= max_per:
+                messagebox.showwarning("Attention", "P min doit être strictement inférieur à P max.")
+                return
+            self._lc_clear_publication_snapshot()
+            t_obs = np.asarray(self.lc_data["time"], dtype=float)
+            span = float(np.ptp(t_obs)) if len(t_obs) else 0.0
+            max_per_use = max_per
+            note = ""
+            if span > 0:
+                cap = max(min_per * 1.01, min(max_per, span * 3.0))
+                if cap < max_per - 1e-9:
+                    max_per_use = cap
+                    note = f" (P max réduit à {max_per_use:.4f} j, durée données ≈ {span:.4f} j)"
+            try:
+                period, power, best = run_lomb_scargle(
+                    self.lc_data["time"], self.lc_data["flux"], min_period=min_per, max_period=max_per_use
+                )
+            except Exception as e:
+                logger.exception("Lomb-Scargle: %s", e)
+                messagebox.showerror("Lomb-Scargle", f"Échec du périodogramme :\n{e}")
+                return
+            self.lc_period_best["value"] = best
+            self.lc_per_result_var.set(f"Période retenue : {best:.6f} j{note}")
+            self.lc_ax_per.clear()
+            self.lc_ax_per.plot(period, power, "b-", lw=0.7)
+            self.lc_ax_per.axvline(best, color="red", ls="--", label=f"P={best:.3f}")
+            self.lc_ax_per.set_xlabel("P (j)")
+            self.lc_ax_per.set_ylabel("Puiss.")
+            self.lc_ax_per.set_title("Lomb-Scargle")
+            self.lc_ax_per.legend(loc="upper right", fontsize=5)
+            self.lc_ax_per.grid(True, alpha=0.3)
+            self._apply_lc_per_mini_style()
+            self.lc_P_var.set(f"{best:.6f}")
+            try:
+                self.lc_fig_per.tight_layout(pad=0.28)
+            except Exception:
+                pass
+            try:
+                if self.lc_canvas_per is not None:
+                    self.lc_canvas_per.draw_idle()
+                else:
+                    self.lc_fig_per.canvas.draw_idle()
+            except Exception:
+                self.lc_fig_per.canvas.draw()
 
-        ttk.Button(per_frame, text="Lancer Lomb-Scargle", command=run_periodogram).pack(side=tk.LEFT, padx=5)
-        per_result_var = tk.StringVar(value="")
-        ttk.Label(per_frame, textvariable=per_result_var, font=("Helvetica", 9)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(_per_r1, text="Lancer Lomb-Scargle", command=run_periodogram).pack(side=tk.LEFT, padx=5)
+        self.lc_per_result_var = tk.StringVar(value="")
+        ttk.Label(
+            per_frame,
+            textvariable=self.lc_per_result_var,
+            font=("Helvetica", 8),
+            wraplength=160,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=2, pady=(4, 0), anchor=tk.W)
 
-        # --- Modèle ---
-        param_frame = ttk.LabelFrame(win, text="3. Modèle F = F0·(1 + A·cos(2π(t-t0)/P))", padding=8)
-        param_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(param_frame, text="P (j):").grid(row=0, column=0, sticky="w", padx=2)
-        P_var = tk.StringVar(value="0.5")
-        ttk.Entry(param_frame, textvariable=P_var, width=12).grid(row=0, column=1, padx=2)
-        ttk.Label(param_frame, text="t0 (JD):").grid(row=0, column=2, sticky="w", padx=2)
-        t0_var = tk.StringVar(value="")
-        ttk.Entry(param_frame, textvariable=t0_var, width=14).grid(row=0, column=3, padx=2)
-        ttk.Label(param_frame, text="A:").grid(row=1, column=0, sticky="w", padx=2)
-        A_var = tk.StringVar(value="0.1")
-        ttk.Entry(param_frame, textvariable=A_var, width=12).grid(row=1, column=1, padx=2)
-        ttk.Label(param_frame, text="F0:").grid(row=1, column=2, sticky="w", padx=2)
-        F0_var = tk.StringVar(value="1.0")
-        ttk.Entry(param_frame, textvariable=F0_var, width=12).grid(row=1, column=3, padx=2)
+        _per_plot_fr = ttk.Frame(per_frame)
+        _per_plot_fr.pack(fill=tk.X, pady=(6, 0))
+        self.lc_canvas_per = FigureCanvasTkAgg(self.lc_fig_per, master=_per_plot_fr)
+        _per_tk = self.lc_canvas_per.get_tk_widget()
+        _per_tk.configure(height=112)
+        _per_tk.pack(fill=tk.X, expand=False)
+        try:
+            self.lc_fig_per.tight_layout(pad=0.28)
+        except Exception:
+            pass
+        self.lc_canvas_per.draw_idle()
 
-        def compute_model():
-            if lc_data["time"] is None:
+        # --- 3. Modèle ---
+        param_frame = ttk.LabelFrame(
+            lc_mid,
+            text="3. Modèle : harmonique (P fixe) ou F0·(1+A·cos(2π(t-t0)/P)) manuel",
+            padding=6,
+        )
+        param_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 4), pady=0)
+        param_body = ttk.Frame(param_frame)
+        param_body.pack(fill=tk.X, expand=True)
+        param_left = ttk.Frame(param_body)
+        param_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        param_btn_col = ttk.Frame(param_body)
+        param_btn_col.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+
+        # Grille 4 colonnes (0–3) : chaque ligne alignée sur les mêmes colonnes
+        self.lc_P_var = tk.StringVar(value="0.5")
+        self.lc_t0_var = tk.StringVar(value="")
+        self.lc_A_var = tk.StringVar(value="0.1")
+        self.lc_F0_var = tk.StringVar(value="1.0")
+        self.lc_harmonic_ls_var = tk.BooleanVar(value=True)
+        self.lc_drift_var = tk.BooleanVar(value=False)
+        self.lc_n_harm_var = tk.StringVar(value="3")
+
+        ttk.Label(param_left, text="P (j)").grid(row=0, column=0, sticky="w", padx=2, pady=1)
+        ttk.Entry(param_left, textvariable=self.lc_P_var, width=11).grid(row=0, column=1, sticky="ew", padx=2, pady=1)
+        ttk.Label(param_left, text="t0 (JD)").grid(row=0, column=2, sticky="w", padx=2, pady=1)
+        ttk.Entry(param_left, textvariable=self.lc_t0_var, width=13).grid(row=0, column=3, sticky="ew", padx=2, pady=1)
+
+        ttk.Label(param_left, text="A").grid(row=1, column=0, sticky="w", padx=2, pady=1)
+        ttk.Entry(param_left, textvariable=self.lc_A_var, width=11).grid(row=1, column=1, sticky="ew", padx=2, pady=1)
+        ttk.Label(param_left, text="F0").grid(row=1, column=2, sticky="w", padx=2, pady=1)
+        ttk.Entry(param_left, textvariable=self.lc_F0_var, width=11).grid(row=1, column=3, sticky="ew", padx=2, pady=1)
+
+        ttk.Checkbutton(
+            param_left,
+            text="Série de Fourier + offset (P fixe)",
+            variable=self.lc_harmonic_ls_var,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=2)
+        ttk.Label(param_left, text="Harmoniques N").grid(row=2, column=2, sticky="e", padx=2, pady=2)
+        ttk.Spinbox(param_left, from_=1, to=8, width=5, textvariable=self.lc_n_harm_var).grid(
+            row=2, column=3, sticky="w", padx=2, pady=2
+        )
+
+        ttk.Checkbutton(
+            param_left,
+            text="Dérive linéaire (tendance / extinction)",
+            variable=self.lc_drift_var,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=2, pady=1)
+
+        for c in (1, 3):
+            param_left.columnconfigure(c, weight=1)
+        self.lc_fit_status_var = tk.StringVar(value="")
+
+        def compute_model(force_manual=False):
+            if self.lc_data["time"] is None or self.lc_data["flux"] is None:
                 messagebox.showwarning("Attention", "Chargez d'abord un fichier.")
                 return
             try:
-                P = float(P_var.get())
-                t0 = float(t0_var.get()) if t0_var.get().strip() else float(np.median(lc_data["time"]))
-                A = float(A_var.get())
-                F0 = float(F0_var.get())
+                P = float(self.lc_P_var.get())
             except ValueError:
-                messagebox.showwarning("Attention", "Paramètres invalides.")
+                messagebox.showwarning("Attention", "P invalide.")
                 return
-            t0_var.set(f"{t0:.6f}")
-            t_obs = lc_data["time"]
-            f_mod = light_curve_model(t_obs, P, t0, A, F0)
-            ax_lc.clear()
-            ax_lc.errorbar(
-                t_obs, lc_data["flux"],
-                yerr=lc_data["flux_err"] if lc_data["flux_err"] is not None else None,
-                fmt="o", markersize=4, alpha=0.7, label="Observations", capsize=2
-            )
-            ax_lc.plot(t_obs, f_mod, "r-", lw=2, label="Modèle")
-            ax_lc.set_xlabel("Temps (JD)")
-            ax_lc.set_ylabel("Flux")
-            ax_lc.legend(loc="upper right", fontsize=8)
-            ax_lc.grid(True, alpha=0.3)
-            ax_lc.set_title("Courbe de lumière (temps)")
-            # Phase
-            phase = (t_obs - t0) % P / P
-            ax_ph.clear()
-            ax_ph.errorbar(
-                phase, lc_data["flux"],
-                yerr=lc_data["flux_err"] if lc_data["flux_err"] is not None else None,
-                fmt="o", markersize=4, alpha=0.7, label="Observations", capsize=2
-            )
-            ax_ph.plot(phase, f_mod, "r-", lw=2, label="Modèle")
-            ax_ph.set_xlabel("Phase")
-            ax_ph.set_ylabel("Flux")
-            ax_ph.legend(loc="upper right", fontsize=8)
-            ax_ph.grid(True, alpha=0.3)
-            ax_ph.set_title("Courbe de phase")
-            fig_lc.canvas.draw_idle()
+            if not np.isfinite(P) or P <= 0:
+                messagebox.showwarning("Attention", "La période P doit être un nombre strictement positif.")
+                return
+            self._lc_clear_publication_snapshot()
+            t_obs = np.asarray(self.lc_data["time"], dtype=float)
+            try:
+                if self.lc_harmonic_ls_var.get() and not force_manual:
+                    try:
+                        n_h = int(self.lc_n_harm_var.get().strip())
+                    except ValueError:
+                        n_h = 2
+                    n_h = max(1, min(8, n_h))
+                    res_ls = fit_harmonic_series_wls(
+                        t_obs,
+                        self.lc_data["flux"],
+                        self.lc_data["flux_err"],
+                        P,
+                        n_harmonics=n_h,
+                        linear_drift=self.lc_drift_var.get(),
+                    )
+                    if not res_ls.get("success"):
+                        messagebox.showerror("Modèle", res_ls.get("message", "Échec ajustement harmonique."))
+                        return
+                    f_mod = np.asarray(res_ls["y_model"], dtype=float)
+                    t_ref = res_ls["t_ref"]
+                    omega = res_ls["omega"]
+                    alpha = res_ls["phase_shift_alpha"]
+                    amp_r = res_ls["amplitude_R"]
+                    b0 = res_ls["offset_b0"]
+                    t0_eq = res_ls["t0_equiv"]
+                    self.lc_t0_var.set(f"{t0_eq:.6f}")
+                    med_fl = float(np.median(self.lc_data["flux"]))
+                    denom = max(abs(med_fl), 1e-9)
+                    a_approx = float(np.clip(amp_r / denom, 0.0, 20.0))
+                    self.lc_A_var.set(f"{a_approx:.4f}")
+                    self.lc_F0_var.set(f"{med_fl:.6f}")
+                    ddl = res_ls["n_dof"]
+                    chi2s = f"χ² = {res_ls['chi2']:.2f}" + (f" ({ddl} ddl)" if ddl else "")
+                    pf = res_ls.get("phase_frac")
+                    pf_s = f", Δt/P={100.0 * float(pf):.1f}%" if pf is not None and np.isfinite(pf) else ""
+                    nh = res_ls.get("n_harmonics", n_h)
+                    self.lc_fit_status_var.set(
+                        f"Fourier (P fixe, N={nh}): {chi2s}{pf_s} — fond b0={b0:.4f}, A₁={amp_r:.4f}. {res_ls.get('message', '')}"
+                    )
+                    self.lc_fit_result.update(
+                        {
+                            "P": P,
+                            "t0": t0_eq,
+                            "A": a_approx,
+                            "F0": med_fl,
+                            "chi2": res_ls["chi2"],
+                            "n_dof": ddl,
+                            "success": True,
+                            "message": "Moindres carrés harmonique",
+                        }
+                    )
+                    phi = omega * (t_obs - t_ref)
+                    phase = np.mod(phi - alpha, 2.0 * np.pi) / (2.0 * np.pi)
+                else:
+                    try:
+                        t0 = float(self.lc_t0_var.get()) if self.lc_t0_var.get().strip() else float(np.median(self.lc_data["time"]))
+                        A = float(self.lc_A_var.get())
+                        F0 = float(self.lc_F0_var.get())
+                    except ValueError:
+                        messagebox.showwarning("Attention", "Paramètres A, F0 ou t0 invalides.")
+                        return
+                    if not np.isfinite(F0) or F0 <= 0:
+                        messagebox.showwarning("Attention", "F0 doit être un flux de référence > 0.")
+                        return
+                    self.lc_t0_var.set(f"{t0:.6f}")
+                    f_mod = light_curve_model(t_obs, P, t0, A, F0)
+                    phase = np.mod(t_obs - t0, P) / P
+                    self.lc_fit_status_var.set("Modèle manuel (paramètres saisis).")
+                    self.lc_fit_result.update(
+                        {
+                            "P": P,
+                            "t0": t0,
+                            "A": A,
+                            "F0": F0,
+                            "chi2": None,
+                            "n_dof": None,
+                            "success": True,
+                            "message": "Modèle cosinus manuel",
+                        }
+                    )
+
+                self.lc_ax_lc.clear()
+                self.lc_ax_lc.errorbar(
+                    t_obs,
+                    self.lc_data["flux"],
+                    yerr=self.lc_data["flux_err"] if self.lc_data["flux_err"] is not None else None,
+                    fmt="o",
+                    markersize=4,
+                    alpha=0.7,
+                    label="Observations",
+                    capsize=2,
+                )
+                self.lc_ax_lc.plot(t_obs, f_mod, "r-", lw=2, label="Modèle")
+                self.lc_ax_lc.set_xlabel("Temps (JD)")
+                self.lc_ax_lc.set_ylabel("Flux")
+                self.lc_ax_lc.legend(loc="upper right", fontsize=8)
+                self.lc_ax_lc.grid(True, alpha=0.3)
+                self.lc_ax_lc.set_title("Courbe de lumière (temps)")
+                self.lc_ax_ph.clear()
+                self.lc_ax_ph.errorbar(
+                    phase,
+                    self.lc_data["flux"],
+                    yerr=self.lc_data["flux_err"] if self.lc_data["flux_err"] is not None else None,
+                    fmt="o",
+                    markersize=4,
+                    alpha=0.7,
+                    label="Observations",
+                    capsize=2,
+                )
+                o_ph = np.argsort(phase)
+                self.lc_ax_ph.plot(phase[o_ph], f_mod[o_ph], "r-", lw=2, label="Modèle")
+                self.lc_ax_ph.set_xlabel("Phase (0–1)")
+                self.lc_ax_ph.set_ylabel("Flux")
+                self.lc_ax_ph.legend(loc="upper right", fontsize=8)
+                self.lc_ax_ph.grid(True, alpha=0.3)
+                self.lc_ax_ph.set_title("Courbe de phase")
+                self.lc_fig_lc.tight_layout()
+                if self.lc_canvas_lc is not None:
+                    self.lc_canvas_lc.draw_idle()
+                else:
+                    self.lc_fig_lc.canvas.draw_idle()
+            except Exception as e:
+                logger.exception("compute_model: %s", e)
+                messagebox.showerror("Modèle", f"Impossible de tracer le modèle :\n{e}")
 
         def run_fit():
-            if lc_data["time"] is None or lc_data["flux"] is None:
+            if self.lc_data["time"] is None or self.lc_data["flux"] is None:
                 messagebox.showwarning("Attention", "Chargez d'abord un fichier.")
                 return
             try:
-                P_init = float(P_var.get())
-                t0_init = float(t0_var.get()) if t0_var.get().strip() else float(np.median(lc_data["time"]))
-                A_init = float(A_var.get())
-                F0_init = float(F0_var.get())
+                P_init = float(self.lc_P_var.get())
+                t0_init = float(self.lc_t0_var.get()) if self.lc_t0_var.get().strip() else float(np.median(self.lc_data["time"]))
+                A_init = float(self.lc_A_var.get())
+                F0_init = float(self.lc_F0_var.get())
             except ValueError:
-                P_init = period_best["value"] or 0.5
-                t0_init = float(np.median(lc_data["time"]))
+                P_init = self.lc_period_best["value"] or 0.5
+                t0_init = float(np.median(self.lc_data["time"]))
                 A_init = 0.1
-                F0_init = float(np.median(lc_data["flux"]))
+                F0_init = float(np.median(self.lc_data["flux"]))
             res = fit_light_curve(
-                lc_data["time"], lc_data["flux"], lc_data["flux_err"],
+                self.lc_data["time"], self.lc_data["flux"], self.lc_data["flux_err"],
                 P_init=P_init, t0_init=t0_init, A_init=A_init, F0_init=F0_init,
             )
-            fit_result.update(res)
-            P_var.set(f"{res['P']:.6f}")
-            t0_var.set(f"{res['t0']:.6f}")
-            A_var.set(f"{res['A']:.4f}")
-            F0_var.set(f"{res['F0']:.6f}")
+            self.lc_fit_result.update(res)
+            self.lc_P_var.set(f"{res['P']:.6f}")
+            self.lc_t0_var.set(f"{res['t0']:.6f}")
+            self.lc_A_var.set(f"{res['A']:.4f}")
+            self.lc_F0_var.set(f"{res['F0']:.6f}")
             chi2_str = f"χ² = {res['chi2']:.2f}" + (f" ({res['n_dof']} ddl)" if res['n_dof'] else "")
-            fit_status_var.set(f"Ajustement: {chi2_str} — " + ("OK" if res["success"] else res.get("message", "")))
-            compute_model()
+            msg_fit = str(res.get("message", "")) if not res["success"] else "OK"
+            self.lc_fit_status_var.set(f"Ajustement: {chi2_str} — {msg_fit}")
+            compute_model(force_manual=True)
 
-        ttk.Button(param_frame, text="Calculer le modèle", command=compute_model).grid(row=2, column=0, columnspan=2, padx=2, pady=4)
-        ttk.Button(param_frame, text="4. Ajuster (inversion)", command=run_fit).grid(row=2, column=2, columnspan=2, padx=2, pady=4)
-        fit_status_var = tk.StringVar(value="")
-        ttk.Label(param_frame, textvariable=fit_status_var, font=("Helvetica", 8), foreground="blue").grid(row=3, column=0, columnspan=4, sticky="w", padx=2)
+        ttk.Button(param_btn_col, text="Calculer le modèle", command=compute_model).pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(param_btn_col, text="Ajuster (inversion)", command=run_fit).pack(fill=tk.X)
+        _lc_fit_status_lbl = ttk.Label(
+            param_frame,
+            textvariable=self.lc_fit_status_var,
+            font=("Helvetica", 8),
+            foreground="blue",
+            wraplength=180,
+            justify=tk.LEFT,
+        )
 
-        # --- Figures ---
-        fig_per = Figure(figsize=(4, 2))
-        ax_per = fig_per.add_subplot(111)
-        canvas_per = FigureCanvasTkAgg(fig_per, master=win)
-        canvas_per.get_tk_widget().pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
-        fig_per.tight_layout()
+        def _lc_fit_status_wrap(_ev=None):
+            try:
+                w = int(param_frame.winfo_width())
+                if w > 48:
+                    _lc_fit_status_lbl.configure(wraplength=max(120, w - 24))
+            except tk.TclError:
+                pass
 
-        fig_lc = Figure(figsize=(8, 5))
-        ax_lc = fig_lc.add_subplot(211)
-        ax_ph = fig_lc.add_subplot(212)
-        canvas_lc = FigureCanvasTkAgg(fig_lc, master=win)
-        canvas_lc.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        fig_lc.tight_layout()
+        param_frame.bind("<Configure>", _lc_fit_status_wrap, add=True)
+        _lc_fit_status_lbl.pack(fill=tk.X, padx=2, pady=(6, 0), anchor=tk.W)
+
+        # --- 4. Graphiques : occupe l'espace vertical restant (redimensionnement dynamique) ---
+        plots_frame = ttk.LabelFrame(parent, text="4. Graphiques (courbe, phase)", padding=4)
+        plots_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
+        plots_frame.rowconfigure(0, weight=1)
+        plots_frame.rowconfigure(1, weight=0)
+        plots_frame.columnconfigure(0, weight=1)
+        self.lc_canvas_lc = FigureCanvasTkAgg(self.lc_fig_lc, master=plots_frame)
+        _lc_plot_tk = self.lc_canvas_lc.get_tk_widget()
+        _lc_plot_tk.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.lc_fig_lc.tight_layout()
+
+        _lc_val_fr = ttk.Frame(plots_frame)
+        _lc_val_fr.grid(row=1, column=0, sticky="ew", padx=2, pady=(6, 2))
+        ttk.Button(
+            _lc_val_fr,
+            text="Valider pour publication…",
+            command=self._lc_validate_for_publication,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Label(
+            _lc_val_fr,
+            text="Enregistre {ID}_asteroid_model.txt sous results/ et alimente l’onglet « 3. Publication » (exports ALCDEF).",
+            font=("Helvetica", 8),
+            wraplength=560,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, padx=6)
+
+        def _on_lc_plot_area_configure(_event):
+            try:
+                tw = self.lc_canvas_lc.get_tk_widget()
+                w, h = int(tw.winfo_width()), int(tw.winfo_height())
+            except (tk.TclError, AttributeError):
+                return
+            if w < 120 or h < 120:
+                return
+            if (w, h) == getattr(self, "_lc_plot_canvas_wh", (0, 0)):
+                return
+            self._lc_plot_canvas_wh = (w, h)
+            aid = getattr(self, "_lc_plot_resize_after_id", None)
+            if aid is not None:
+                try:
+                    self.frame.after_cancel(aid)
+                except tk.TclError:
+                    pass
+
+            def _apply_lc_plot_size():
+                self._lc_plot_resize_after_id = None
+                try:
+                    dpi = float(self.lc_fig_lc.get_dpi())
+                    self.lc_fig_lc.set_size_inches(w / dpi, h / dpi, forward=False)
+                    self.lc_fig_lc.tight_layout()
+                    self.lc_canvas_lc.draw_idle()
+                except Exception:
+                    pass
+
+            self._lc_plot_resize_after_id = self.frame.after(120, _apply_lc_plot_size)
+
+        _lc_plot_tk.bind("<Configure>", _on_lc_plot_area_configure, add=True)
 
         def _refresh_plots():
-            if lc_data["time"] is None:
+            if self.lc_data["time"] is None:
                 return
-            t_med = float(np.median(lc_data["time"]))
-            if not t0_var.get().strip():
-                t0_var.set(f"{t_med:.6f}")
+            t_med = float(np.median(self.lc_data["time"]))
+            if not self.lc_t0_var.get().strip():
+                self.lc_t0_var.set(f"{t_med:.6f}")
             compute_model()
 
+        self._clear_lightcurve_graph_axes()
         if default_path and Path(default_path).exists():
-            win.after(100, load_file)
+            self.frame.after(100, load_file)
+        else:
+            self.frame.after(100, lambda: self.refresh_lightcurve_graphs(silent=True))
 
     def _open_damit_shape_window(self):
         """Ouvre un dialogue pour charger un fichier modèle 3D (.obj ou shape.txt DAMIT) et l'afficher."""
