@@ -94,6 +94,8 @@ from core.alcdef_export import (
     ReportMeta,
     build_simple_alcdef_text,
     build_submission_report_lines,
+    damit_model_flux_at_phase,
+    load_damit_light_curve_model,
     load_light_curve_txt,
     relative_flux_to_differential_magnitude,
 )
@@ -526,6 +528,11 @@ class AsteroidPhotometryTab:
         # Modélisation courbe de lumière (panneau intégré en haut à droite)
         self.lc_data = {"time": None, "flux": None, "flux_err": None}
         self.lc_raw_data = {"time": None, "flux": None, "flux_err": None}
+        # Modèle DAMIT (phase 0–1, flux relatif) — surimpression sur le graphique de phase uniquement.
+        self.lc_damit_phase = None
+        self.lc_damit_flux = None
+        self._lc_phase_obs_cached = None
+        self._lc_request_redraw_model = None  # défini dans _build_lightcurve_modeling_panel → compute_model
         # Jeu figé pour l’onglet Publication (ALCDEF) après « Valider pour publication »
         self.lc_publication_snapshot = None
         self.lc_period_best = {"value": None}
@@ -5737,6 +5744,103 @@ class AsteroidPhotometryTab:
                 except Exception:
                     pass
 
+    def _lc_damit_flux_scale(self, phase_obs, y_obs, shift: float) -> float:
+        """Facteur multiplicatif pour rapprocher verticalement le modèle DAMIT des observations."""
+        if self.lc_damit_phase is None or self.lc_damit_flux is None:
+            return 1.0
+        ph = np.asarray(phase_obs, dtype=float)
+        y = np.asarray(y_obs, dtype=float)
+        m = damit_model_flux_at_phase(ph, self.lc_damit_phase, self.lc_damit_flux, shift)
+        ok = np.isfinite(ph) & np.isfinite(y) & np.isfinite(m) & (np.abs(m) > 1e-12)
+        if not np.any(ok):
+            return 1.0
+        v_auto = getattr(self, "lc_damit_scale_auto_var", None)
+        if v_auto is not None and v_auto.get():
+            return float(np.median(y[ok]) / np.median(m[ok]))
+        try:
+            v = float(self.lc_damit_scale_var.get())
+        except (ValueError, tk.TclError):
+            return 1.0
+        if np.isfinite(v) and v > 0:
+            return float(v)
+        return 1.0
+
+    def _lc_plot_damit_on_phase_ax(self, ax, phase_obs, y_obs):
+        """Trace la courbe modèle DAMIT sur l’axe phase (après observations / Fourier)."""
+        if self.lc_damit_phase is None or self.lc_damit_flux is None:
+            return
+        if len(self.lc_damit_phase) < 2:
+            return
+        v_show = getattr(self, "lc_damit_show_var", None)
+        if v_show is None or not v_show.get():
+            return
+        try:
+            shift = float(self.lc_damit_shift_var.get()) % 1.0
+        except (ValueError, tk.TclError, AttributeError):
+            shift = 0.0
+        x = np.linspace(0.0, 1.0, 720)
+        m = damit_model_flux_at_phase(x, self.lc_damit_phase, self.lc_damit_flux, shift)
+        scale = self._lc_damit_flux_scale(phase_obs, y_obs, shift)
+        ax.plot(
+            x,
+            m * scale,
+            color="#cc5500",
+            ls="--",
+            lw=1.65,
+            label="DAMIT (modèle)",
+            zorder=4,
+        )
+
+    def _lc_auto_align_damit_phase(self):
+        """Cherche le déphasage (et l’échelle implicite) qui minimise l’écart aux points d’observation."""
+        if self.lc_damit_phase is None or self.lc_damit_flux is None or len(self.lc_damit_phase) < 2:
+            messagebox.showwarning("DAMIT", "Chargez d’abord un fichier modèle DAMIT.")
+            return
+        ph = getattr(self, "_lc_phase_obs_cached", None)
+        if ph is None or self.lc_data["flux"] is None:
+            messagebox.showwarning(
+                "DAMIT",
+                "Affichez d’abord la courbe de phase (recharger le fichier ou « Calculer / tracer le modèle »).",
+            )
+            return
+        y = np.asarray(self.lc_data["flux"], dtype=float)
+        ph = np.asarray(ph, dtype=float)
+        ok0 = np.isfinite(ph) & np.isfinite(y)
+        if np.count_nonzero(ok0) < 3:
+            messagebox.showwarning("DAMIT", "Pas assez de points valides pour l’alignement.")
+            return
+        ph = ph[ok0]
+        y = y[ok0]
+        best_s, best_cost = 0.0, float("inf")
+        for s in np.linspace(0.0, 1.0, 360, endpoint=False):
+            m = damit_model_flux_at_phase(ph, self.lc_damit_phase, self.lc_damit_flux, float(s))
+            ok = np.isfinite(m) & (np.abs(m) > 1e-15)
+            if np.count_nonzero(ok) < 3:
+                continue
+            a = float(np.dot(m[ok], y[ok]) / max(np.dot(m[ok], m[ok]), 1e-18))
+            resid = y[ok] - a * m[ok]
+            cost = float(np.mean(resid ** 2))
+            if cost < best_cost:
+                best_cost, best_s = cost, float(s)
+        self.lc_damit_shift_var.set(f"{best_s:.6f}")
+        v_auto = getattr(self, "lc_damit_scale_auto_var", None)
+        if v_auto is not None:
+            v_auto.set(True)
+        cb = getattr(self, "_lc_request_redraw_model", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                logger.exception("Redessin modèle après alignement DAMIT")
+        else:
+            try:
+                self.refresh_lightcurve_graphs(silent=True)
+            except Exception:
+                try:
+                    self.lc_canvas_lc.draw_idle()
+                except Exception:
+                    pass
+
     def refresh_lightcurve_graphs(self, silent: bool = False):
         """Charge la courbe du dossier, Lomb-Scargle, modèle harmonique (N=3) ; met à jour les graphiques."""
         parent_win = self.frame.winfo_toplevel()
@@ -5746,6 +5850,7 @@ class AsteroidPhotometryTab:
                 self.lc_data[k] = None
             for k in self.lc_raw_data:
                 self.lc_raw_data[k] = None
+            self._lc_phase_obs_cached = None
             self._clear_lightcurve_graph_axes()
             if not silent:
                 messagebox.showinfo(
@@ -5769,6 +5874,7 @@ class AsteroidPhotometryTab:
                 self.lc_data[k] = None
             for k in self.lc_raw_data:
                 self.lc_raw_data[k] = None
+            self._lc_phase_obs_cached = None
             self._clear_lightcurve_graph_axes()
             if not silent:
                 messagebox.showerror("Graphiques", f"Impossible de charger la courbe :\n{e}", parent=parent_win)
@@ -5876,6 +5982,8 @@ class AsteroidPhotometryTab:
         if f_mod is not None:
             o_ph = np.argsort(phase)
             self.lc_ax_ph.plot(phase[o_ph], f_mod[o_ph], "r-", lw=2, label="Modèle (Fourier)")
+        self._lc_phase_obs_cached = np.asarray(phase, dtype=float).copy()
+        self._lc_plot_damit_on_phase_ax(self.lc_ax_ph, phase, y_obs)
         self.lc_ax_ph.set_xlabel("Phase (0–1)")
         self.lc_ax_ph.set_ylabel("Flux")
         self.lc_ax_ph.legend(loc="upper right", fontsize=8)
@@ -6329,7 +6437,7 @@ class AsteroidPhotometryTab:
         default_path = self._discover_default_lightcurve_path()
 
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(3, weight=1)
+        parent.rowconfigure(4, weight=1)
 
         # --- 1. Fichier (compact, une ligne de saisie + statut) ---
         file_frame = ttk.LabelFrame(parent, text="1. Fichier courbe de lumière", padding=(6, 4))
@@ -6432,8 +6540,87 @@ class AsteroidPhotometryTab:
         _lc_status_lbl.pack(fill=tk.X, padx=2, pady=(2, 0), anchor=tk.W)
 
         # --- Détrendage lent (séries longues) ---
+        damit_frame = ttk.LabelFrame(parent, text="1b. Modèle DAMIT (surimpression sur la courbe de phase)", padding=(6, 4))
+        damit_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 2))
+        self.lc_damit_show_var = tk.BooleanVar(value=True)
+        self.lc_damit_shift_var = tk.StringVar(value="0")
+        self.lc_damit_scale_auto_var = tk.BooleanVar(value=True)
+        self.lc_damit_scale_var = tk.StringVar(value="1.0")
+        self.lc_damit_status_var = tk.StringVar(value="")
+
+        def _damit_redraw_plots():
+            cb = getattr(self, "_lc_request_redraw_model", None)
+            if callable(cb) and self.lc_data["time"] is not None:
+                try:
+                    cb()
+                except Exception:
+                    logger.exception("Redessin après changement DAMIT")
+            else:
+                try:
+                    self.refresh_lightcurve_graphs(silent=True)
+                except Exception:
+                    pass
+
+        def _load_damit_lc():
+            _opts = dict(
+                parent=top,
+                title="Fichier light_curve.txt (export DAMIT, phase + flux relatif)",
+                filetypes=[("Courbe DAMIT", "*.txt"), ("Tous les fichiers", "*.*")],
+            )
+            _idir = _initial_dir_for_dialog()
+            if _idir:
+                _opts["initialdir"] = _idir
+            fname = filedialog.askopenfilename(**_opts)
+            if not fname:
+                return
+            try:
+                ph, fl = load_damit_light_curve_model(fname)
+                self.lc_damit_phase = ph
+                self.lc_damit_flux = fl
+                self.lc_damit_status_var.set(f"Chargé : {Path(fname).name} ({len(ph)} pts)")
+            except Exception as e:
+                logger.exception("Chargement DAMIT: %s", e)
+                messagebox.showerror("DAMIT", str(e), parent=top)
+                return
+            _damit_redraw_plots()
+
+        def _clear_damit_lc():
+            self.lc_damit_phase = None
+            self.lc_damit_flux = None
+            self.lc_damit_status_var.set("")
+            _damit_redraw_plots()
+
+        _dam_r1 = ttk.Frame(damit_frame)
+        _dam_r1.pack(fill=tk.X)
+        ttk.Button(_dam_r1, text="Charger light_curve.txt (DAMIT)…", command=_load_damit_lc).pack(side=tk.LEFT, padx=2)
+        ttk.Button(_dam_r1, text="Effacer modèle", command=_clear_damit_lc).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(
+            _dam_r1,
+            text="Afficher",
+            variable=self.lc_damit_show_var,
+            command=_damit_redraw_plots,
+        ).pack(side=tk.LEFT, padx=(10, 2))
+        _dam_r2 = ttk.Frame(damit_frame)
+        _dam_r2.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(_dam_r2, text="Déphasage [0–1] :").pack(side=tk.LEFT, padx=2)
+        ttk.Entry(_dam_r2, textvariable=self.lc_damit_shift_var, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(_dam_r2, text="Auto (aligner aux observations)", command=self._lc_auto_align_damit_phase).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Checkbutton(
+            _dam_r2,
+            text="Échelle auto (médiane)",
+            variable=self.lc_damit_scale_auto_var,
+            command=_damit_redraw_plots,
+        ).pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Label(_dam_r2, text="Facteur manuel :").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Entry(_dam_r2, textvariable=self.lc_damit_scale_var, width=7).pack(side=tk.LEFT, padx=0)
+        ttk.Label(damit_frame, textvariable=self.lc_damit_status_var, font=("Helvetica", 8), foreground="gray").pack(
+            anchor="w", padx=2, pady=(4, 0)
+        )
+
         detrend_frame = ttk.LabelFrame(parent, text="Détrendage (sur données brutes du fichier)", padding=(6, 4))
-        detrend_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 2))
+        detrend_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 2))
         _dt_row = ttk.Frame(detrend_frame)
         _dt_row.pack(fill=tk.X)
         ttk.Label(_dt_row, text="Méthode :").pack(side=tk.LEFT, padx=(0, 4))
@@ -6475,7 +6662,7 @@ class AsteroidPhotometryTab:
 
         # --- Ligne 3 : périodogramme + modèle (côte à côte) ---
         lc_mid = ttk.Frame(parent)
-        lc_mid.grid(row=2, column=0, sticky="nsew", padx=0, pady=(0, 2))
+        lc_mid.grid(row=3, column=0, sticky="nsew", padx=0, pady=(0, 2))
         lc_mid.columnconfigure(0, weight=1, uniform="lc_mid")
         lc_mid.columnconfigure(1, weight=1, uniform="lc_mid")
 
@@ -6749,6 +6936,8 @@ class AsteroidPhotometryTab:
                 )
                 o_ph = np.argsort(phase)
                 self.lc_ax_ph.plot(phase[o_ph], f_mod[o_ph], "r-", lw=2, label="Modèle")
+                self._lc_phase_obs_cached = np.asarray(phase, dtype=float).copy()
+                self._lc_plot_damit_on_phase_ax(self.lc_ax_ph, phase, self.lc_data["flux"])
                 self.lc_ax_ph.set_xlabel("Phase (0–1)")
                 self.lc_ax_ph.set_ylabel("Flux")
                 self.lc_ax_ph.legend(loc="upper right", fontsize=8)
@@ -6793,6 +6982,7 @@ class AsteroidPhotometryTab:
 
         ttk.Button(param_btn_col, text="Calculer le modèle", command=compute_model).pack(fill=tk.X, pady=(0, 4))
         ttk.Button(param_btn_col, text="Ajuster (inversion)", command=run_fit).pack(fill=tk.X)
+        self._lc_request_redraw_model = compute_model
         _lc_fit_status_lbl = ttk.Label(
             param_frame,
             textvariable=self.lc_fit_status_var,
@@ -6815,7 +7005,7 @@ class AsteroidPhotometryTab:
 
         # --- 4. Graphiques : occupe l'espace vertical restant (redimensionnement dynamique) ---
         plots_frame = ttk.LabelFrame(parent, text="4. Graphiques (courbe, phase)", padding=4)
-        plots_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
+        plots_frame.grid(row=4, column=0, sticky="nsew", padx=4, pady=2)
         plots_frame.rowconfigure(0, weight=1)
         plots_frame.rowconfigure(1, weight=0)
         plots_frame.columnconfigure(0, weight=1)
