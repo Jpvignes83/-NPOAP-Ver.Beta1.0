@@ -273,11 +273,14 @@ class HomeTab(ttk.Frame):
         api_entry = ttk.Entry(left_frame, textvariable=self.api_var, width=40, show="*")
         api_entry.grid(row=9, column=0, columnspan=2, pady=5)
 
-        ttk.Button(
-            left_frame,
-            text="Générer/Modifier",
-            command=self.set_api_key
-        ).grid(row=10, column=0, columnspan=2, pady=5)
+        api_btns = ttk.Frame(left_frame)
+        api_btns.grid(row=10, column=0, columnspan=2, pady=5, sticky="ew")
+        ttk.Button(api_btns, text="Générer/Modifier", command=self.set_api_key).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(api_btns, text="Voir / vérifier", command=self.verify_api_key_view).pack(
+            side=tk.LEFT
+        )
 
         # Affiliations
         ttk.Separator(left_frame, orient="horizontal").grid(
@@ -533,6 +536,65 @@ class HomeTab(ttk.Frame):
                 )
             # Sauvegarde globale config.json
             self.save_config()
+
+    def verify_api_key_view(self):
+        """
+        Affiche le texte réellement utilisé : ~/.astrometry_api_key si non vide,
+        sinon repli sur astrometry_api_key de config.json.
+        """
+        raw = ""
+        source = "(aucune)"
+        err_read = None
+        if API_KEY_PATH.exists():
+            try:
+                raw = API_KEY_PATH.read_text(encoding="utf-8")
+                if raw.strip():
+                    source = str(API_KEY_PATH)
+                else:
+                    raw = ""
+            except OSError as e:
+                err_read = str(e)
+                raw = ""
+        if not raw.strip():
+            raw = self.config_data.get("astrometry_api_key", "") or ""
+            source = str(self.config_file) if raw.strip() else source
+
+        win = tk.Toplevel(self)
+        win.title("Clé API Astrometry.net — contenu enregistré")
+        win.geometry("520x360")
+
+        ttk.Label(win, text=f"Source : {source}", font=("", 9)).pack(anchor="w", padx=10, pady=(10, 4))
+        if err_read:
+            ttk.Label(win, text=f"Lecture fichier clé : {err_read}", foreground="orange").pack(
+                anchor="w", padx=10, pady=2
+            )
+
+        ttk.Label(win, text="Texte enregistré (tel quel) :").pack(anchor="w", padx=10, pady=(8, 2))
+        txt = tk.Text(win, height=6, width=64, wrap="none", font=("Consolas", 10))
+        txt.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        txt.insert("1.0", raw if raw else "(vide)")
+        txt.configure(state="disabled")
+
+        n = len(raw)
+        nstrip = len(raw.strip())
+        ascii_ok = raw.isascii() if raw else True
+        extra_ws = (raw != raw.strip()) if raw else False
+        checks = ttk.Frame(win)
+        checks.pack(fill=tk.X, padx=10, pady=6)
+        ttk.Label(checks, text=f"Longueur (caractères) : {n}").pack(anchor="w")
+        ttk.Label(checks, text=f"Longueur après strip() : {nstrip}").pack(anchor="w")
+        ttk.Label(
+            checks,
+            text=f"ASCII uniquement : {'oui' if ascii_ok else 'non'}",
+            foreground=("gray" if ascii_ok else "darkred"),
+        ).pack(anchor="w")
+        ttk.Label(
+            checks,
+            text=f"Espaces / retours en tête ou fin : {'oui (à nettoyer)' if extra_ws else 'non'}",
+            foreground=("darkred" if extra_ws else "gray"),
+        ).pack(anchor="w")
+
+        ttk.Button(win, text="Fermer", command=win.destroy).pack(pady=10)
 
     # ------------------------------------------------------------------
     # Affiliations
