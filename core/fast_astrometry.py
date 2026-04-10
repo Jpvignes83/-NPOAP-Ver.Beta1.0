@@ -30,7 +30,7 @@ from scipy.optimize import curve_fit
 import astropy.units as u
 from astropy.io import fits
 from astropy.time import Time
-from astropy.table import Table
+from astropy.table import Table, vstack
 from astropy.wcs import WCS
 from astropy.wcs.utils import fit_wcs_from_points
 from astropy.coordinates import SkyCoord, match_coordinates_sky
@@ -58,10 +58,12 @@ try:
     except Exception:
         HAS_GPU = False
         logger.debug("CuPy installé mais CUDA non disponible - utilisation CPU")
-except ImportError:
+except Exception as e:
+    # ImportError si absent ; AttributeError/RuntimeError possibles si site-packages
+    # incohérent (ex. metadata None dans _detect_duplicate_installation).
     HAS_GPU = False
     cp = None
-    logger.debug("CuPy non installé - utilisation CPU uniquement")
+    logger.debug("CuPy indisponible (%s) — astrométrie en CPU uniquement", type(e).__name__)
 warnings.filterwarnings("ignore", category=AstropyWarning)
 Vizier.server = 'http://vizier.cfa.harvard.edu/'
 
@@ -342,11 +344,42 @@ class FastStarMatcher:
 # 3. REQUÊTE GAIA OPTIMISÉE AVEC CACHE
 # =============================================================================
 
+def gaia_box_radius_for_imaging_fov(
+    target_coord: SkyCoord,
+    wcs: WCS,
+    shape: Tuple[int, int],
+    margin: float = 1.25,
+    min_arcmin: float = 20.0,
+    max_arcmin: float = 72.0,
+) -> u.Quantity:
+    """
+    Rayon (demi-côté de la boîte Vizier) centré sur T1 pour couvrir tout le CCD.
+
+    Les comparateurs près des bords peuvent être à > 12′ de T1 ; un rayon fixe trop
+    petit exclut ces étoiles du catalogue téléchargé (G_Gaia vide dans le SET-UP).
+    """
+    ny, nx = int(shape[0]), int(shape[1])
+    sep_max_deg = 0.0
+    for px, py in ((0, 0), (nx - 1, 0), (0, ny - 1), (nx - 1, ny - 1)):
+        try:
+            cc = wcs.pixel_to_world(px, py)
+            sep_max_deg = max(sep_max_deg, float(target_coord.separation(cc).to(u.deg).value))
+        except Exception:
+            continue
+    r_deg = sep_max_deg * float(margin)
+    lo = float((min_arcmin * u.arcmin).to(u.deg).value)
+    hi = float((max_arcmin * u.arcmin).to(u.deg).value)
+    r_deg = float(np.clip(r_deg, lo, hi))
+    return r_deg * u.deg
+
+
 def optimized_query_gaia(
     center_coord: SkyCoord,
     search_radius: u.Quantity,
     mag_limit: float = 18.0,
-    gaia_cache: Optional[GaiaCache] = None
+    gaia_cache: Optional[GaiaCache] = None,
+    bypass_cache: bool = False,
+    row_limit: int = 5000,
 ) -> Table:
     """
     Requête Gaia avec cache local persistant.
@@ -361,6 +394,13 @@ def optimized_query_gaia(
         Magnitude limite G
     gaia_cache : GaiaCache, optional
         Cache pour éviter les requêtes répétées
+    bypass_cache : bool
+        Si True, ignore le cache (utile quand une requête antérieure, ex. astrométrie,
+        a enregistré seulement les étoiles G ≤ limite plus stricte : les comparateurs
+        plus faibles seraient absents du cache).
+    row_limit : int
+        Limite Vizier (régions denses : au-delà de quelques milliers, des étoiles du bord
+        du champ peuvent être absentes de la réponse tronquée).
     
     Returns
     -------
@@ -368,7 +408,7 @@ def optimized_query_gaia(
         Table Gaia avec colonnes Source, RA_ICRS, DE_ICRS, Gmag
     """
     # Vérification du cache
-    if gaia_cache:
+    if gaia_cache and not bypass_cache:
         cached = gaia_cache.get_cached(center_coord, search_radius)
         if cached is not None:
             # Filtre par magnitude si nécessaire
@@ -384,7 +424,10 @@ def optimized_query_gaia(
         dec_center = center_coord.dec.deg
         radius_deg = search_radius.to(u.deg).value
         
-        v = Vizier(columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag", "phot_variable_flag"], row_limit=5000)
+        v = Vizier(
+            columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag", "phot_variable_flag"],
+            row_limit=int(row_limit),
+        )
         res = v.query_region(
             center_coord,
             width=2 * radius_deg * u.deg,
@@ -412,6 +455,127 @@ def optimized_query_gaia(
     except Exception as e:
         logger.error(f"Erreur requête Gaia : {e}")
         return Table()
+
+
+def query_gaia_dr2_vizier_box(
+    center_coord: SkyCoord,
+    search_radius: u.Quantity,
+    mag_limit: float = 21.0,
+    row_limit: int = 5000,
+) -> Table:
+    """
+    Gaia DR2 via Vizier (I/345/gaia2) — complément lorsque DR3 n’a pas la source ou G vide.
+
+    Retourne une table minimale RA_ICRS, DE_ICRS, Gmag (+ Source si présent).
+    """
+    try:
+        radius_deg = search_radius.to(u.deg).value
+        logger.info(
+            "Gaia DR2 (Vizier I/345/gaia2), rayon %.4f°, G ≤ %.1f",
+            radius_deg,
+            mag_limit,
+        )
+        v = Vizier(
+            columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag"],
+            row_limit=int(row_limit),
+        )
+        res = v.query_region(
+            center_coord,
+            width=2 * radius_deg * u.deg,
+            height=2 * radius_deg * u.deg,
+            catalog="I/345/gaia2",
+        )
+        if not res or len(res[0]) == 0:
+            return Table(names=("RA_ICRS", "DE_ICRS", "Gmag"), dtype=("f8", "f8", "f8"))
+        tab = res[0]
+        if "Gmag" not in tab.colnames or "RA_ICRS" not in tab.colnames or "DE_ICRS" not in tab.colnames:
+            logger.warning("Gaia DR2 Vizier : colonnes inattendues %s", list(tab.colnames)[:12])
+            return Table(names=("RA_ICRS", "DE_ICRS", "Gmag"), dtype=("f8", "f8", "f8"))
+        gm = np.asarray(tab["Gmag"], dtype=float)
+        ok = np.isfinite(gm) & (gm <= float(mag_limit))
+        tab = tab[ok]
+        if len(tab) == 0:
+            return Table(names=("RA_ICRS", "DE_ICRS", "Gmag"), dtype=("f8", "f8", "f8"))
+        out = Table()
+        out["RA_ICRS"] = np.asarray(tab["RA_ICRS"], dtype=float)
+        out["DE_ICRS"] = np.asarray(tab["DE_ICRS"], dtype=float)
+        out["Gmag"] = np.asarray(tab["Gmag"], dtype=float)
+        if "Source" in tab.colnames:
+            out["Source"] = tab["Source"]
+        logger.info("Gaia DR2 : %d étoiles retenues (G ≤ %.1f)", len(out), mag_limit)
+        return out
+    except Exception as e:
+        logger.error("Erreur requête Gaia DR2 (Vizier) : %s", e)
+        return Table(names=("RA_ICRS", "DE_ICRS", "Gmag"), dtype=("f8", "f8", "f8"))
+
+
+def merge_gaia_dr3_dr2_photometry_field(
+    tab_dr3: Table,
+    tab_dr2: Table,
+    dedup_arcsec: float = 1.0,
+) -> Table:
+    """
+    Fusion pour magnitudes comparateurs : DR3 (prioritaire) + sources DR2 sans voisin DR3.
+
+    Sortie : RA_ICRS, DE_ICRS, Gmag uniquement.
+    """
+    cols = ("RA_ICRS", "DE_ICRS", "Gmag")
+    empty = Table(names=cols, dtype=("f8", "f8", "f8"))
+
+    def _slim_dr3(t: Table) -> Table:
+        if t is None or len(t) == 0:
+            return empty.copy()
+        if not all(c in t.colnames for c in cols):
+            return empty.copy()
+        gm = np.asarray(t["Gmag"], dtype=float)
+        ok = np.isfinite(gm)
+        if not np.any(ok):
+            return empty.copy()
+        return Table(
+            {
+                "RA_ICRS": np.asarray(t["RA_ICRS"], dtype=float)[ok],
+                "DE_ICRS": np.asarray(t["DE_ICRS"], dtype=float)[ok],
+                "Gmag": gm[ok],
+            }
+        )
+
+    rows3 = _slim_dr3(tab_dr3)
+    if tab_dr2 is None or len(tab_dr2) == 0:
+        return rows3
+    if not all(c in tab_dr2.colnames for c in cols):
+        return rows3
+    if len(rows3) == 0:
+        return Table(
+            {
+                "RA_ICRS": np.asarray(tab_dr2["RA_ICRS"], dtype=float),
+                "DE_ICRS": np.asarray(tab_dr2["DE_ICRS"], dtype=float),
+                "Gmag": np.asarray(tab_dr2["Gmag"], dtype=float),
+            }
+        )
+
+    c3 = SkyCoord(ra=rows3["RA_ICRS"] * u.deg, dec=rows3["DE_ICRS"] * u.deg)
+    extra_ra, extra_de, extra_g = [], [], []
+    lim = float(dedup_arcsec)
+    for i in range(len(tab_dr2)):
+        c2 = SkyCoord(
+            ra=float(tab_dr2["RA_ICRS"][i]) * u.deg,
+            dec=float(tab_dr2["DE_ICRS"][i]) * u.deg,
+        )
+        sep_min = float(np.min(c2.separation(c3).arcsec))
+        if sep_min > lim:
+            extra_ra.append(float(tab_dr2["RA_ICRS"][i]))
+            extra_de.append(float(tab_dr2["DE_ICRS"][i]))
+            extra_g.append(float(tab_dr2["Gmag"][i]))
+    if not extra_ra:
+        return rows3
+    t_add = Table(
+        {
+            "RA_ICRS": np.array(extra_ra, dtype=float),
+            "DE_ICRS": np.array(extra_de, dtype=float),
+            "Gmag": np.array(extra_g, dtype=float),
+        }
+    )
+    return vstack([rows3, t_add])
 
 
 # =============================================================================
@@ -1100,10 +1264,48 @@ def fast_astrometry_solve(
                         'selected': True,
                     })
         
+        # Filtrage robuste des ouvertures aberrantes avant extrapolation.
+        # Exemple typique: une ou deux apertures avec RMS catastrophique (fit WCS instable).
+        rms_arr_all = np.asarray(rms_list, dtype=float)
+        valid_rms_mask = np.isfinite(rms_arr_all) & (rms_arr_all > 0)
+        if np.any(valid_rms_mask):
+            med_rms = float(np.median(rms_arr_all[valid_rms_mask]))
+            mad_rms = float(np.median(np.abs(rms_arr_all[valid_rms_mask] - med_rms)))
+            # Seuils souples: borne relative + borne robuste (MAD), et borne absolue anti-divergence.
+            rel_cap = max(5.0 * med_rms, med_rms + 10.0)
+            robust_cap = med_rms + 6.0 * max(mad_rms, 1e-6)
+            hard_cap = min(1e4, max(rel_cap, robust_cap))
+            valid_rms_mask &= (rms_arr_all <= hard_cap)
+        else:
+            valid_rms_mask = np.zeros_like(rms_arr_all, dtype=bool)
+
+        # Mettre à jour le marquage selected dans la série UI.
+        for i_m, m in enumerate(aperture_metrics):
+            if i_m < len(valid_rms_mask):
+                m["selected"] = bool(valid_rms_mask[i_m])
+
+        if np.sum(valid_rms_mask) < 2:
+            logger.warning(
+                "Zero-aperture: pas assez d'ouvertures valides après filtrage robuste; "
+                "fallback sur toutes les ouvertures valides numériques."
+            )
+            valid_rms_mask = np.isfinite(rms_arr_all) & (rms_arr_all > 0)
+
+        apertures_fit = np.asarray(apertures, dtype=float)[valid_rms_mask]
+        rms_fit = rms_arr_all[valid_rms_mask]
+        ra_fit = np.asarray(mean_residual_ra_list, dtype=float)[valid_rms_mask]
+        dec_fit = np.asarray(mean_residual_dec_list, dtype=float)[valid_rms_mask]
+
+        rejected_idx = np.where(~valid_rms_mask)[0]
+        for ridx in rejected_idx:
+            logger.warning(
+                f"  Aperture {float(apertures[ridx]):.2f}px rejetée (RMS={float(rms_arr_all[ridx]):.4f}\")"
+            )
+
         # Extrapolation vers zero-aperture (linéaire ou quadratique)
-        if len(rms_list) >= 2 and len(apertures) == len(rms_list):
+        if len(rms_fit) >= 2 and len(apertures_fit) == len(rms_fit):
             # Essayer d'abord extrapolation quadratique si on a au moins 3 points
-            use_quadratic = len(rms_list) >= 3
+            use_quadratic = len(rms_fit) >= 3
             zero_rms = None
             fit_r2 = None
             
@@ -1112,19 +1314,19 @@ def fast_astrometry_solve(
             if use_quadratic:
                 try:
                     # Fit quadratique pondéré (w = 1/rms, méthode Zero-Aperture-Astrometry)
-                    rms_arr = np.array(rms_list, dtype=float)
+                    rms_arr = np.array(rms_fit, dtype=float)
                     w_rms = 1.0 / np.maximum(rms_arr, 1e-10)
-                    coeffs_quad = np.polyfit(apertures, rms_list, 2, w=w_rms)
+                    coeffs_quad = np.polyfit(apertures_fit, rms_fit, 2, w=w_rms)
                     zero_rms_quad = coeffs_quad[2]  # Ordonnée à l'origine (aperture = 0)
                     
                     # Calcul R² pour validation
-                    rms_pred_quad = np.polyval(coeffs_quad, apertures)
-                    ss_res = np.sum((rms_list - rms_pred_quad)**2)
-                    ss_tot = np.sum((rms_list - np.mean(rms_list))**2)
+                    rms_pred_quad = np.polyval(coeffs_quad, apertures_fit)
+                    ss_res = np.sum((rms_fit - rms_pred_quad)**2)
+                    ss_tot = np.sum((rms_fit - np.mean(rms_fit))**2)
                     fit_r2_quad = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
                     
                     # Validation : zero_rms doit être positif et raisonnable, R² > seuil
-                    if zero_rms_quad >= 0 and zero_rms_quad <= max(rms_list) * 2 and fit_r2_quad > quad_r2_min:
+                    if zero_rms_quad >= 0 and zero_rms_quad <= max(rms_fit) * 2 and fit_r2_quad > quad_r2_min:
                         zero_rms = zero_rms_quad
                         fit_r2 = fit_r2_quad
                         logger.info(f"Extrapolation quadratique : RMS(0) = {zero_rms_quad:.4f}\" (R²={fit_r2_quad:.3f})")
@@ -1138,20 +1340,20 @@ def fast_astrometry_solve(
             # Si quadratique n'a pas fonctionné ou pas assez de points, utiliser linéaire
             if zero_rms is None:
                 # Fit linéaire pondéré (w = 1/rms, méthode Zero-Aperture-Astrometry)
-                rms_arr = np.array(rms_list, dtype=float)
+                rms_arr = np.array(rms_fit, dtype=float)
                 w_rms = 1.0 / np.maximum(rms_arr, 1e-10)
-                coeffs = np.polyfit(apertures, rms_list, 1, w=w_rms)
+                coeffs = np.polyfit(apertures_fit, rms_fit, 1, w=w_rms)
                 zero_rms = coeffs[1]  # Ordonnée à l'origine (aperture = 0)
                 
                 # Calcul R²
-                rms_pred = np.polyval(coeffs, apertures)
-                ss_res = np.sum((rms_list - rms_pred)**2)
-                ss_tot = np.sum((rms_list - np.mean(rms_list))**2)
+                rms_pred = np.polyval(coeffs, apertures_fit)
+                ss_res = np.sum((rms_fit - rms_pred)**2)
+                ss_tot = np.sum((rms_fit - np.mean(rms_fit))**2)
                 fit_r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
                 
                 logger.info(f"Extrapolation linéaire : RMS(0) = {zero_rms:.4f}\" (pente={coeffs[0]:.4f}, R²={fit_r2:.3f})")
                 if fit_r2 < lin_r2_min:
-                    zero_rms = min(rms_list)
+                    zero_rms = min(rms_fit)
                     logger.warning(
                         f"Extrapolation linéaire instable (R²={fit_r2:.3f} < {lin_r2_min}), "
                         "utilisation du minimum observé"
@@ -1159,10 +1361,10 @@ def fast_astrometry_solve(
             
             # Validation finale : zero_rms doit être positif et raisonnable
             if zero_rms < 0:
-                zero_rms = min(rms_list)  # Prend le minimum si extrapolation négative
+                zero_rms = min(rms_fit)  # Prend le minimum si extrapolation négative
                 logger.warning("Extrapolation zero-aperture négative, utilisation du minimum observé")
-            if zero_rms > max(rms_list) * 2:
-                zero_rms = min(rms_list)  # Limite si extrapolation trop grande
+            if zero_rms > max(rms_fit) * 2:
+                zero_rms = min(rms_fit)  # Limite si extrapolation trop grande
                 logger.warning("Extrapolation zero-aperture excessive, utilisation du minimum observé")
         else:
             # Fallback : utilise le RMS minimum
@@ -1177,16 +1379,12 @@ def fast_astrometry_solve(
         offset_ra0_arcsec = None
         offset_dec0_arcsec = None
         wcs_zero_aperture = None
-        if (
-            len(mean_residual_ra_list) >= 2
-            and len(mean_residual_ra_list) == len(apertures)
-            and len(mean_residual_dec_list) == len(apertures)
-        ):
+        if len(ra_fit) >= 2 and len(ra_fit) == len(apertures_fit) and len(dec_fit) == len(apertures_fit):
             try:
-                rms_arr = np.array(rms_list, dtype=float)
+                rms_arr = np.array(rms_fit, dtype=float)
                 w_rms = 1.0 / np.maximum(rms_arr, 1e-10)
-                coeffs_ra = np.polyfit(apertures, mean_residual_ra_list, 1, w=w_rms)
-                coeffs_dec = np.polyfit(apertures, mean_residual_dec_list, 1, w=w_rms)
+                coeffs_ra = np.polyfit(apertures_fit, ra_fit, 1, w=w_rms)
+                coeffs_dec = np.polyfit(apertures_fit, dec_fit, 1, w=w_rms)
                 offset_ra0_arcsec = float(np.polyval(coeffs_ra, 0.0))
                 offset_dec0_arcsec = float(np.polyval(coeffs_dec, 0.0))
                 # WCS corrigé : décalage crval pour annuler l'offset systématique à aperture 0
@@ -1252,10 +1450,15 @@ def fast_astrometry_solve(
     )
     rms = stats_classical['rms_total']
     
-    # Comparer les deux RMS et choisir le meilleur (le plus petit)
-    # Si zero_rms est significativement pire (> 1.5x rms), utiliser rms classique
-    if zero_rms > rms * 1.5:
-        logger.warning(f"Zero-aperture RMS ({zero_rms:.4f}\") pire que RMS classique ({rms:.4f}\"), utilisation du RMS classique")
+    # Choisir le WCS final : le RMS « zero-aperture » est une extrapolation à r=0 sur la courbe
+    # RMS(aperture) ; il peut être plus pessimiste que le RMS du fit WCS à ouverture classique.
+    # Ancien critère (zero > 1.5 × classique) gardait souvent le zéro alors que le classique était déjà meilleur.
+    _prefer_classical = float(zero_rms) > float(rms) + 1e-9
+    if _prefer_classical:
+        logger.info(
+            f"Zero-aperture RMS ({zero_rms:.4f}\") > RMS classique ({rms:.4f}\"); "
+            "on conserve le WCS et le RMS classiques (meilleure cohérence métrique)."
+        )
         final_wcs = wcs_classical
         final_stats = stats_classical
         final_rms = rms
