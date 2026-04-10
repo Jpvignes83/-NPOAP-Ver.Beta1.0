@@ -222,10 +222,14 @@ def build_simple_alcdef_text(
     *,
     delimiter: str = "|",
     comment_lines: Optional[List[str]] = None,
+    alcdef_metadata_lines: Optional[List[str]] = None,
 ) -> str:
     """
     Assemble un ou plusieurs blocs S-ALCDEF (un seul bloc ici : une session fichier).
     Les lignes commençant par # sont ignorées par le parseur S-ALCDEF.
+
+    ``alcdef_metadata_lines`` : lignes ``CLÉ=valeur`` (ex. EQUINOX, COMPNAME1, …)
+    insérées **après** ``STARTBLOCK`` et **avant** ``STARTDATA``, conformément au format ALCDEF.
     """
     out: List[str] = []
     out.append("# Fichier généré par NPOAP — soumission : https://alcdef.org/ (Simple ALCDEF)")
@@ -235,6 +239,12 @@ def build_simple_alcdef_text(
             for part in str(c).splitlines():
                 out.append("# " + part.strip())
     out.append("STARTBLOCK")
+    if alcdef_metadata_lines:
+        for raw in alcdef_metadata_lines:
+            line = str(raw).strip()
+            if not line or line.startswith("#"):
+                continue
+            out.append(line)
     out.append("STARTDATA")
     for t, m, me in zip(jd, mag, mag_err):
         if not np.isfinite(t) or not np.isfinite(m):
@@ -273,10 +283,13 @@ def build_submission_report_lines(
     meta: ReportMeta,
     *,
     fit: Optional[Dict[str, Any]] = None,
+    alcdef_comparator_lines: Optional[List[str]] = None,
 ) -> str:
     """
     Texte d'aide pour rédaction (Minor Planet Bulletin, notes LCDB, commentaire ALCDEF).
     Ce n'est pas un fichier caméra-prête : l'auteur doit suivre le guide des auteurs MPB.
+
+    ``alcdef_comparator_lines`` : copie des métadonnées COMP* / EQUINOX (Gaia DR3) figées à la validation.
     """
     jd = np.asarray(jd, dtype=float)
     mag = np.asarray(mag, dtype=float)
@@ -292,6 +305,17 @@ def build_submission_report_lines(
     lines.append(f"Filtre (instrument) : {meta.filter_name or '(à compléter)'}")
     lines.append(f"MagBand ALCDEF / système : {meta.mag_band or '(à compléter — voir standard ALCDEF 2024+ ; Gaia G = GG)'}")
     lines.append("")
+    if alcdef_comparator_lines is not None:
+        if alcdef_comparator_lines:
+            lines.append("Métadonnées ALCDEF — comparateurs (Gaia DR3, résolus à la validation) :")
+            for ln in alcdef_comparator_lines:
+                lines.append(f"  {ln}")
+        else:
+            lines.append(
+                "Comparateurs ALCDEF : non enregistrés (aucun comparateur C* dans la session "
+                "photométrie au moment de « Valider pour publication » — pas de lignes COMP / EQUINOX)."
+            )
+        lines.append("")
     if len(jd):
         lines.append(
             f"Période couverte (JD UTC) : {float(np.min(jd)):.6f} – {float(np.max(jd)):.6f} "
