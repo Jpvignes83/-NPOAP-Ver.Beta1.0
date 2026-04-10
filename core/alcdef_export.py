@@ -25,8 +25,85 @@ LIGHT_CURVE_MAGNITUDE_HEADER = (
     "# NPOAP LIGHT_CURVE_MAGNITUDE — JD-UTC, mag (diff. -2.5*log10(fn)), mag_err (3 dec.)\n"
 )
 
+def _time_column_looks_like_rotation_phase(t: np.ndarray) -> bool:
+    """
+    Heuristique pour les exports « phase de rotation » (ex. DAMIT) :
+    abscisse dans ~[0, 1] (sans en-tête magnitude NPOAP).
+    """
+    arr = np.asarray(t, dtype=float)
+    if arr.size < 5:
+        return False
+    lo = float(np.nanmin(arr))
+    hi = float(np.nanmax(arr))
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        return False
+    if lo < -0.02 or hi > 1.02:
+        return False
+    return True
+
+
+def damit_model_flux_at_phase(
+    phase_obs: np.ndarray,
+    damit_phase: np.ndarray,
+    damit_flux: np.ndarray,
+    shift: float,
+) -> np.ndarray:
+    """
+    Évalue le modèle DAMIT sur les phases d'observation ``phase_obs`` (0–1),
+    avec déphasage ``shift`` : valeur = D(mod(φ + shift, 1)).
+    """
+    phi = np.mod(np.asarray(phase_obs, dtype=float) + float(shift), 1.0)
+    dph = np.asarray(damit_phase, dtype=float).ravel()
+    dfl = np.asarray(damit_flux, dtype=float).ravel()
+    if dph.size < 2:
+        return np.full_like(phi, np.nan, dtype=float)
+    o = np.argsort(dph)
+    dph_s = dph[o]
+    dfl_s = dfl[o]
+    ph_ext = np.concatenate([dph_s - 1.0, dph_s, dph_s + 1.0])
+    fl_ext = np.concatenate([dfl_s, dfl_s, dfl_s])
+    return np.interp(phi, ph_ext, fl_ext, left=np.nan, right=np.nan)
+
+
+def load_damit_light_curve_model(path: Union[str, Path]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Charge un ``light_curve.txt`` exporté par DAMIT : phase (0–1), flux relatif.
+
+    Deux colonnes numériques attendues (pas le format magnitude NPOAP).
+    Retourne ``(phase, flux)`` triés par phase.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with open(path, encoding="utf-8", errors="replace") as fp:
+        first_line = fp.readline()
+    if "LIGHT_CURVE_MAGNITUDE" in first_line.upper():
+        raise ValueError("Fichier magnitude NPOAP : utilisez une courbe d'observations ou un export DAMIT brut.")
+    try:
+        data = np.loadtxt(path, comments="#")
+    except Exception as e:
+        raise ValueError(f"Lecture impossible : {path}") from e
+    data = np.atleast_2d(data)
+    if data.shape[1] != 2:
+        raise ValueError(
+            "Le modèle DAMIT attendu a exactement 2 colonnes : phase (0–1), flux relatif."
+        )
+    phase = np.asarray(data[:, 0], dtype=float)
+    flux = np.asarray(data[:, 1], dtype=float)
+    if not _time_column_looks_like_rotation_phase(phase):
+        raise ValueError(
+            "La première colonne ne ressemble pas à une phase de rotation dans [0, 1]."
+        )
+    o = np.argsort(phase)
+    phase = phase[o]
+    flux = flux[o]
+    return phase, flux
+
+
 __all__ = [
     "load_light_curve_txt",
+    "load_damit_light_curve_model",
+    "damit_model_flux_at_phase",
     "LIGHT_CURVE_MAGNITUDE_HEADER",
     "relative_flux_to_differential_magnitude",
     "build_simple_alcdef_text",
@@ -36,14 +113,17 @@ __all__ = [
 
 def load_light_curve_txt(path: Union[str, Path]) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
-    Charge un fichier light_curve.txt NPOAP.
+    Charge un fichier light_curve.txt NPOAP (temps en JD-UTC).
 
     Formats supportés :
     - Flux : Time (JD), Relative_flux_fn, relative_flux_fn_err (éventuelle ligne d'en-tête texte).
     - Magnitude : première ligne ``# ... LIGHT_CURVE_MAGNITUDE ...`` puis JD-UTC, mag, mag_err ;
       conversion vers flux linéaire : f = 10**(-0.4 * m).
 
-    Retourne toujours (jd, flux, flux_err) avec flux_err None si une seule colonne de données.
+    Les exports « phase + flux » du site DAMIT ne sont pas des courbes d'observation :
+    utilisez ``load_damit_light_curve_model`` et la surimpression dans l'interface.
+
+    Retourne ``(jd, flux, flux_err)`` ; ``flux_err`` est None si absent.
     """
     path = Path(path)
     if not path.is_file():
@@ -82,6 +162,12 @@ def load_light_curve_txt(path: Union[str, Path]) -> Tuple[np.ndarray, np.ndarray
         flux_err = np.asarray(data[:, 2], dtype=float)
     else:
         flux_err = None
+    if data.shape[1] == 2 and _time_column_looks_like_rotation_phase(jd):
+        raise ValueError(
+            "Ce fichier ressemble à un export DAMIT (phase 0–1 + flux relatif), pas à une courbe "
+            "NPOAP en jours julien. Dans l’onglet courbe, utilisez « Charger modèle DAMIT… » pour le "
+            "superposer à vos observations."
+        )
     return jd, flux, flux_err
 
 
