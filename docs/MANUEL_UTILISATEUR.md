@@ -2,7 +2,7 @@
 
 **NPOAP - Nouvelle Plateforme d'Observation et d'Analyse Photométrique**
 
-Version 1.0
+Version 1.0 — *compléments avril 2026 : photométrie astéroïdes (coefficients de transformation, batch, interface) et réduction (SNR fit, agrégation CSV paire).*
 
 **Responsable HOPS-modified** : J.P Vignes  
 **Contact** : jeanpascal.vignes@gmail.com
@@ -14,6 +14,7 @@ Version 1.0
 1. [Vue d'ensemble](#1-vue-densemble)
 2. [Accueil](#2-accueil)
 3. [Réduction de Données](#3-réduction-de-données)
+   - [Coefficients de transformation (Réduction)](#coef-transformation-reduction)
 4. [Photométrie Exoplanètes (HOPS intégré)](#4-photométrie-exoplanètes)
 5. [Photométrie Astéroïdes](#5-photométrie-astéroïdes)
    - [5.1 Astrométrie Zero-Aperture](#51-astrométrie-zero-aperture)
@@ -26,8 +27,8 @@ Version 1.0
    - [7.2 Sous-onglet B : Recherche & Analyse TTV](#72-sous-onglet-b--recherche--analyse-ttv)
    - [7.3 Sous-onglet C : Analyse Système Multiple](#73-sous-onglet-c--analyse-système-multiple)
    - [7.4 Sous-onglet D : Simulation N-body](#74-sous-onglet-d--simulation-n-body)
-8. [Étoiles Binaires](#8-étoiles-binaires)
-9. [Easy Lucky Imaging](#9-easy-lucky-imaging)
+8. [Étoiles Binaires](#8-étoiles-binaires) — *sous-onglet de l’onglet principal **⭐ Etoiles***
+9. [Easy Lucky Imaging](#9-easy-lucky-imaging) — *sous-onglet de **⭐ Etoiles*** (affiché si le module est installé)
    - [9.1 Mesure de séparation](#91-mesure-de-séparation)
 10. [Analyse des outils et fichiers compatibles LcTools (TESS)](#10-analyse-des-outils-et-fichiers-compatibles-lctools-tess)
 11. [Spectroscopie](#11-spectroscopie)
@@ -48,8 +49,7 @@ L'interface principale contient plusieurs onglets dans un notebook :
 - **🛰️ Photométrie Astéroïdes** : Photométrie et astrométrie d'astéroïdes
 - **💥 Photométrie Transitoires** : Analyse d'événements transitoires
 - **📈 Analyse de Données** : Outils d'analyse avancés (périodogrammes, TTV, N-body)
-- **⭐ Étoiles Binaires** : Modélisation de systèmes binaires
-- **🌟 Easy Lucky Imaging** : Traitement d'images d'étoiles doubles et mesure de séparation
+- **⭐ Etoiles** : Regroupe deux **sous-onglets** — **⭐ Étoiles Binaires** (modélisation PHOEBE2) et **✨ Easy Lucky Imaging** (traitement REDUC, mesure de séparation) ; ce dernier n’apparaît que si le module est installé
 - **📚 Catalogues** : Extraction et gestion de catalogues astronomiques (étoiles, astéroïdes, comètes, binaires, exoplanètes)
 - **🔬 Spectroscopie** : Analyse de spectres
 - **🌙 Observation de la nuit** : Éphémérides pour la nuit (astéroïdes, exoplanètes, comètes, binaires à éclipses), graphique d’altitude et export NINA
@@ -102,7 +102,7 @@ Dans la section **Calculateur d'échelle de pixel**, vous pouvez calculer l'éch
 3. **Calculer** : Cliquez sur le bouton pour calculer l'échelle de pixel en secondes d'arc par pixel
 4. **Sauvegarder dans config.py** : Cliquez sur ce bouton pour sauvegarder les valeurs dans le fichier de configuration
 
-L'échelle de pixel calculée sera automatiquement utilisée dans l'onglet **Easy Lucky Imaging** pour les mesures de séparation angulaire.
+L'échelle de pixel calculée sera automatiquement utilisée dans le sous-onglet **✨ Easy Lucky Imaging** (onglet principal **⭐ Etoiles**) pour les mesures de séparation angulaire.
 
 **Formule utilisée** : `Échelle de pixel (arcsec/pixel) = (Taille pixel en mm / Focale en mm) × 206265`
 
@@ -275,7 +275,17 @@ L'astrométrie permet d'ajouter les informations de coordonnées célestes (WCS)
 
 5. **Utiliser les images calibrées** :
    - Pour la photométrie, utilisez les images du dossier `astrometry/` ou `science/` (après astrométrie)
-  
+
+<a id="coef-transformation-reduction"></a>
+### Coefficients de transformation photométrique (panneau Réduction)
+
+Dans l’onglet **Réduction de Données**, le panneau **Coefficients de transformation** permet d’ajuster une droite entre magnitude **instrumentale** (photométrie d’ouverture sur l’image) et magnitude **catalogue** (Gaia G/BP/RP déreddenées, ou Johnson B/V/Rc via APASS selon la bande choisie), avec **E(B-V)** (souvent issu d’**IRSA Dust** au centre du champ).
+
+1. **Image FITS** : image **déjà astrométrisée** (WCS céleste valide).
+2. **Filtre observateur** : saisi ou lu depuis l’en-tête (**FILTER**, etc.) ; doit être cohérent avec celui indiqué plus tard dans l’onglet **Photométrie Astéroïdes** (« Filtre utilisé ») pour le rapprochement des fichiers.
+3. **Calcul des magnitudes** : détection d’étoiles, ouvertures et ciel ; seules les sources dont le **SNR du flux net** est **≥ 20** participent à la régression (étoiles trop bruitées exclues).
+4. **Sauvegarder le coefficient** : ajoute une ligne au journal global et au fichier paire sous **`%USERPROFILE%\.npoap\Coeftransformation\`** (ex. `G__Gaia_G.csv` : filtre **G** × bande **Gaia G**).
+5. **Médiane 2σ → CSV paire** : à partir des lignes déjà enregistrées pour ce couple filtre × bande, calcule la **médiane** de la pente et de l’intercept après retrait des valeurs extrêmes (**> 2σ** sur la pente et sur l’intercept, intersection des deux critères) ; réécrit le CSV paire et ajoute une **ligne de synthèse** (dernière ligne) avec une colonne **`mag_std`** (médiane des RMS des mesures retenues). Cette ligne est ensuite prioritaire au **chargement** côté astéroïdes.
 
 ---
 
@@ -461,17 +471,18 @@ Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans 
    En pratique, on suppose que l’objet se déplace de façon quasi linéaire sur le ciel entre la première et la dernière prise ; c’est une approximation raisonnable sur une série courte (quelques heures).
 
 4. **Configurer la photométrie** :
-   - Sur une image de référence, cliquez sur **"⭕ SET-UP PHOTOMÉTRIE"** pour définir T1/comparateurs et les apertures.
+   - Sur une image de référence, cliquez sur **« ⭕ SET-UP PHOTOMÉTRIE »** pour définir **T1**, les **comparateurs** (liste Gaia, clics sur l’image) et les **ouvertures** validées dans la fenêtre dédiée.
    - En cas de comète diffuse (FWHM instable), privilégiez le mode image par image (voir ci-dessous).
 
 5. **Résultats photométriques**
    - Mode **comète (image par image)** :
-     - Bouton **« Photométrie image »**
+     - Bouton **« Photométrie image »** (sous le cadre *Photométrie d’Ouverture*, ou depuis la barre de navigation de la série).
      - CSV cumulatif : **`results/<objet>_photometrie_image_par_image.csv`**
-     - Colonnes : `filename, JD-UTC, date_obs, filter_used, delta-to_G, mag_T1_G, rmsMag_T1`
+     - Colonnes exportées : `filename, JD-UTC, date_obs, filter_used, delta-to_G, mag_T1_G, rmsMag_T1` — la colonne **`mag_T1_G`** contient la magnitude **déjà calibrée** dans le système de référence (Gaia G par défaut avec comparateurs, ou **bande catalogue** correspondant aux coefficients chargés si vous utilisez la **transformation** ; le nom de colonne reste historique).
    - Mode **astéroïdes (batch)** :
-     - Bouton **"📊 PHOTOMÉTRIE BATCH (Astéroïdes)"**
-     - Résultats batch standards dans `photometrie/results.csv` (+ `light_curve.txt`)
+     - Bouton **« 📊 PHOTOMÉTRIE BATCH (Astéroïdes) »**
+     - Résultats dans `photometrie/results.csv` (+ `light_curve.txt` basé sur la magnitude **différentielle** `mag_T1_fn`).
+     - Si **« Utiliser coeff. transformation »** est coché et que **a, b** ont été **chargés** avant le batch : colonnes supplémentaires **`mag_T1_ref`**, **`rms_mag_T1_ref`**, **`delta_to_ref`**, **`m_inst_T1`**, **`trans_ref_band_id`** (magnitude catalogue via `a×m_inst+b`, magnitude instrumentale `−2,5 log₁₀(flux)`, identifiant de bande).
      - Copie compilée exportée dans `results`.
 
 6. **Sans éphémérides** :
@@ -479,7 +490,7 @@ Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans 
      1. positions ZA0/astrométriques déjà calculées,
      2. ancres manuelles (première/dernière image),
      3. position fixe de référence (fallback).
-   - La magnitude peut être calculée via comparateurs Gaia (si comparateurs valides).
+   - La magnitude peut être calculée via comparateurs Gaia (si comparateurs valides), ou via les **coefficients de transformation** enregistrés depuis la **Réduction** (voir *Photométrie d’ouverture* ci-dessous).
 
 7. **Après obtention de l'ID** :
    - Une fois que l'objet a reçu un ID MPC, vous pouvez relancer "🔭 Récupérer Éphémérides"
@@ -491,18 +502,25 @@ Si vous observez un objet qui n'a **pas encore d'ID MPC** ou qui n'est pas dans 
 2. **Clic manuel** : Cliquez sur l'astéroïde dans l'image pour le sélectionner manuellement.
 3. **Header FITS** : lors du chargement d’une image, le logiciel peut placer T1 à partir de **`OBJCTRA` / `OBJCTDEC`** (ou `RA` / `DEC` en secours), en interprétant les formats **sexagésimaux** classiques (séparateurs **:** ou **espaces**) ainsi que les **valeurs numériques** en degrés ou heures.
 
-### Sélection des étoiles de comparaison
+### Sélection des étoiles de comparaison (SET-UP photométrie)
 
-1. **Ouvrir la fenêtre de sélection** : Cliquez sur "Sélectionner les comps"
-2. **Critères de sélection** :
-   - Étoiles dans un rayon de 15 arcminutes
-   - Magnitude appropriée (ni trop faible, ni saturée)
-   - Exclusion automatique des étoiles variables connues (Gaia DR3)
-3. **Validation** : Cliquez sur "Valider" pour confirmer votre sélection
+1. **Ouvrir la fenêtre** : **« ⭕ SET-UP PHOTOMÉTRIE »** (cadre *Photométrie d’Ouverture*).
+2. **Placer T1** sur la cible, puis **ajouter des comparateurs** depuis la liste Gaia (clics sur l’image) ; exclusion possible des étoiles **variables** (Gaia DR3).
+3. **Valider** : ouverture de la fenêtre des **rayons d’ouverture** ; à la fin, la configuration est mémorisée pour l’image par image et le **batch**.
 
 ### Photométrie
 
 La photométrie peut être effectuée sur une image unique ou en mode batch sur toute la série. La précision de la photométrie dépend de la qualité de l'astrométrie préalable.
+
+#### Photométrie d'ouverture : filtre, Δ et coefficients de transformation
+
+Dans le sous-onglet **2. Photométrie**, le cadre **Photométrie d’Ouverture** regroupe :
+
+- **Filtre utilisé** et **Δ (m_inst → ref.)** : le filtre sert à retrouver la bonne entrée dans les fichiers de coefficients (voir [§3 — Coefficients de transformation](#coef-transformation-reduction)). Le **Δ** est recalculé automatiquement lorsque c’est possible (comparateurs Gaia **G**, ou coefficients **a**, **b**).
+- **Case « Utiliser coeff. transformation »** : si elle est cochée et que vous avez cliqué **« Charger a,b (CSV / journal) »**, la magnitude catalogue est **`mag_ref = a × m_inst + b`** (régression issue de la **Réduction**), avec **`Δ = (a − 1) × m_inst + b`** pour l’image courante. L’incertitude peut combiner l’erreur flux et **`mag_std`** lorsque le fichier le fournit (ligne agrégée médiane 2σ ou colonne du journal). **Sans** case ou **sans** a,b chargés, le logiciel conserve le mode **comparateurs Gaia G** : `mag = m_inst + Δ` avec **Δ** = médiane des `G − m_inst` sur les comparateurs.
+- **Correspondance filtre → bande catalogue** pour le chargement (fichier paire puis journal) : **G** → Gaia G ; libellés contenant **BP** → Gaia BP ; **RP** → Gaia RP ; **B** / **V** / **R** ou **Rc** → Johnson **B** / **V** / **Rc** (APASS). Le fichier attendu est du type **`<Filtre>__<Bande>.csv`** dans **`%USERPROFILE%\.npoap\Coeftransformation\`** (le segment *Bande* dépend exactement du libellé enregistré à la sauvegarde, ex. *Gaia G*, *Johnson V (APASS DR9)*). Détails de l’enregistrement : [§3 — Coefficients de transformation](#coef-transformation-reduction).
+- **Disposition** : sous la case à cocher, une **colonne de boutons** (largeur réduite) propose **Charger a,b**, **SET-UP PHOTOMÉTRIE**, **PHOTOMÉTRIE BATCH**, **Photométrie image** ; un libellé affiche l’état des coefficients (**ref_band_id**, **a**, **b**, éventuellement **σ_fit**).
+- **Batch** : si la case est cochée sans coefficients chargés, le batch est **refusé** avec un message d’avertissement. Avec coefficients, voir les colonnes **`mag_T1_ref`**, etc., dans **`photometrie/results.csv`** (résumé au **§5**, *Résultats photométriques*, mode batch).
 
 #### Méthodes d'astrométrie et leur impact sur la photométrie
 
@@ -536,8 +554,8 @@ Avant de lancer la photométrie, vous devez choisir une méthode d'astrométrie 
    - **Bouton** : **« Photométrie image »**
    - **Fonctionnement** :
      - Traite uniquement l'image actuellement affichée
-     - Utilise la configuration définie via **"⭕ SET-UP PHOTOMÉTRIE"**
-     - Calcule `mag_T1_G` à partir des comparateurs Gaia
+     - Utilise la configuration définie via **« ⭕ SET-UP PHOTOMÉTRIE »**
+     - Calcule une magnitude **calibrée** dans le CSV (`mag_T1_G`) : soit **médiane des comparateurs Gaia G** (`m_inst + Δ`), soit **`a×m_inst+b`** si la **transformation** est activée et **a,b** chargés
      - Met à jour un CSV cumulatif dans `results`
    - **Utilisation** :
      - Cas comètes / objets diffus (réglages fins image par image)
@@ -547,12 +565,13 @@ Avant de lancer la photométrie, vous devez choisir une méthode d'astrométrie 
      - Astrométrie effectuée (pour un positionnement précis de T1)
 
 2. **Photométrie batch (Astéroïdes)** :
-   - **Bouton** : "📊 PHOTOMÉTRIE BATCH (Astéroïdes)"
+   - **Bouton** : **« 📊 PHOTOMÉTRIE BATCH (Astéroïdes) »**
    - **Fonctionnement** :
      - Traite automatiquement **toutes les images** du dossier chargé
      - Utilise la configuration photométrique validée
      - Applique les mêmes apertures à toutes les images
-     - Génère une courbe de lumière complète
+     - Génère une courbe de lumière complète (**`light_curve.txt`** en magnitude **différentielle** `mag_T1_fn`)
+     - Si **coeff. transformation** : colonnes catalogue **`mag_T1_ref`** / erreurs dans **`results.csv`** (voir *Photométrie d’ouverture*)
    - **Utilisation** :
      - Pour traiter une série complète d'observations
      - Après avoir validé la configuration sur une image de référence
@@ -584,7 +603,7 @@ Avant de lancer la photométrie, vous devez choisir une méthode d'astrométrie 
 2. **Configuration photométrique** (image par image) :
    - Naviguez vers une image de bonne qualité (bon seeing, bon SNR)
    - Cliquez sur l'image pour sélectionner T1 (l'astéroïde)
-   - Cliquez sur "⭕ SET-UP PHOTOMÉTRIE"
+   - Cliquez sur **« ⭕ SET-UP PHOTOMÉTRIE »**
    - Configurez les apertures (rayon, annulus)
    - Sélectionnez les étoiles de comparaison
    - Validez la configuration
@@ -1117,11 +1136,13 @@ Simuler numériquement les interactions gravitationnelles entre les planètes d'
 
 ## 8. Étoiles Binaires
 
-L'onglet **Étoiles Binaires** permet de modéliser et d'analyser des systèmes d'étoiles binaires à éclipses en utilisant PHOEBE2.
+*Sous-onglet de l’onglet principal **⭐ Etoiles** (libellé **⭐ Étoiles Binaires** dans la barre du second notebook).*
+
+Le sous-onglet **Étoiles Binaires** permet de modéliser et d'analyser des systèmes d'étoiles binaires à éclipses en utilisant PHOEBE2.
 
 ### Prérequis
 
-PHOEBE2 doit être installé pour utiliser cet onglet. Si ce n'est pas le cas, l'application affichera un message avec les instructions d'installation.
+PHOEBE2 doit être installé pour utiliser ce sous-onglet. Si ce n'est pas le cas, l'application affichera un message avec les instructions d'installation.
 
 ### Création d'un système
 
@@ -1196,7 +1217,9 @@ Le bouton **🎬 Visualisation 3D** ouvre une fenêtre interactive permettant de
 
 ## 9. Easy Lucky Imaging
 
-L'onglet **Easy Lucky Imaging** permet de traiter des images d'étoiles doubles/binaires avec des techniques de réduction d'images (méthodes REDUC) et de mesurer précisément la séparation et l'angle de position entre deux étoiles.
+*Sous-onglet de l’onglet principal **⭐ Etoiles** (libellé **✨ Easy Lucky Imaging** dans la barre du second notebook). Ce sous-onglet n’apparaît que si le module est disponible dans votre installation ; sinon seul **Étoiles Binaires** est proposé sous **⭐ Etoiles**.*
+
+Le sous-onglet **Easy Lucky Imaging** permet de traiter des images d'étoiles doubles/binaires avec des techniques de réduction d'images (méthodes REDUC) et de mesurer précisément la séparation et l'angle de position entre deux étoiles.
 
 ### 9.1 Mesure de séparation
 
@@ -1235,7 +1258,7 @@ La fonction **Mesure de séparation** permet de mesurer précisément la sépara
 
 1. **Préparer l'image** :
    - Assurez-vous que l'image a été astrométriée (onglet "Réduction de Données" → Astrométrie)
-   - Chargez l'image dans l'onglet "Easy Lucky Imaging"
+   - Ouvrez l’onglet principal **⭐ Etoiles**, puis le sous-onglet **✨ Easy Lucky Imaging**, et chargez l’image
 
 2. **Ouvrir la fenêtre de mesure** :
    - Cliquez sur le bouton **"Afficher Image pour Mesure"**
@@ -1548,6 +1571,6 @@ Pour toute question ou problème, consultez la documentation technique ou contac
 
 ---
 
-**NPOAP - Manuel Utilisateur v1.0** (mise à jour : onglet Observation de la nuit, sources exoplanètes, libellé Mag vis)
+**NPOAP - Manuel Utilisateur v1.0** (mise à jour : onglet **⭐ Etoiles** regroupant Étoiles binaires et Easy Lucky Imaging ; Observation de la nuit, sources exoplanètes, libellé Mag vis)
 
 *Ce manuel décrit l'utilisation de base de NPOAP. Pour les procédures d'installation, consultez le manuel d'installation séparé.*
