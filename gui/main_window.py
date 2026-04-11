@@ -70,10 +70,17 @@ class MainWindow:
         )
         self.asteroid_photometry_tab = AsteroidPhotometryTab(self.notebook)
         self.transient_photometry_tab = TransientPhotometryTab(self.notebook)
-        self.binary_stars_tab = BinaryStarsTab(self.notebook)
         self.planetarium_tab = PlanetariumTab(self.notebook)
+
+        # Onglet « Étoiles » : sous-onglets Étoiles binaires + Easy Lucky Imaging
+        self.stars_container = ttk.Frame(self.notebook)
+        self.stars_notebook = ttk.Notebook(self.stars_container)
+        self.stars_notebook.pack(fill=tk.BOTH, expand=True)
+        self.binary_stars_tab = BinaryStarsTab(self.stars_notebook)
+        self.stars_notebook.add(self.binary_stars_tab, text="⭐ Étoiles Binaires")
         if EASY_LUCKY_AVAILABLE:
-            self.easy_lucky_imaging_tab = EasyLuckyImagingTab(self.notebook)
+            self.easy_lucky_imaging_tab = EasyLuckyImagingTab(self.stars_notebook)
+            self.stars_notebook.add(self.easy_lucky_imaging_tab, text="✨ Easy Lucky Imaging")
         else:
             self.easy_lucky_imaging_tab = None
         self.cluster_analysis_tab = ClusterAnalysisTab(self.notebook)
@@ -102,9 +109,7 @@ class MainWindow:
         self.notebook.add(self.photometry_exoplanets_tab, text="🔭 Photométrie Exoplanètes")
         self.notebook.add(self.asteroid_photometry_tab.frame, text="🛰️ Photométrie Astéroïdes")
         self.notebook.add(self.transient_photometry_tab, text="💥 Photométrie Transitoires")
-        self.notebook.add(self.binary_stars_tab, text="⭐ Étoiles Binaires")
-        if self.easy_lucky_imaging_tab is not None:
-            self.notebook.add(self.easy_lucky_imaging_tab, text="✨ Easy Lucky Imaging")
+        self.notebook.add(self.stars_container, text="⭐ Etoiles")
         self.notebook.add(self.cluster_analysis_tab, text="📊 Analyse d'amas")
         self.notebook.add(self.spectroscopy_tab, text="🔬 Spectroscopie")
         if self.catalogues_tab is not None:

@@ -89,6 +89,12 @@ from core.asteroid_lightcurve_model import (
     light_curve_model,
 )
 from core.asteroid_shape_model import load_shape
+from core.transformation_coefficients import (
+    load_latest_transformation_coefficient,
+    pair_coefficient_csv_path,
+    ref_band_id_for_observer_filter,
+    ref_band_label_for_id,
+)
 from core.alcdef_export import (
     LIGHT_CURVE_MAGNITUDE_HEADER,
     ReportMeta,
@@ -529,6 +535,11 @@ class AsteroidPhotometryTab:
         self.photometry_gaia_mag_cache = {}
         self.photometry_filter_var = tk.StringVar(value="G")
         self.photometry_delta_var = tk.DoubleVar(value=0.0)
+        self._phot_trans_a = None
+        self._phot_trans_b = None
+        self._phot_trans_mag_std: float | None = None
+        self._phot_trans_ref_band_id: str | None = None
+        self._phot_trans_use_var = tk.BooleanVar(value=False)
 
         # Modélisation courbe de lumière (panneau intégré en haut à droite)
         self.lc_data = {"time": None, "flux": None, "flux_err": None}
@@ -807,11 +818,17 @@ class AsteroidPhotometryTab:
         # Réglages photométrie Gaia intégrés en tête du cadre Photométrie d'Ouverture
         ttk.Label(photo_frame, text="Filtre utilisé:").grid(row=0, column=0, sticky="w", padx=5, pady=(2, 1))
         ttk.Entry(photo_frame, textvariable=self.photometry_filter_var, width=8).grid(row=0, column=1, sticky="w", padx=4, pady=(2, 1))
-        ttk.Label(photo_frame, text="Δ(G-filtre) [mag]:").grid(row=1, column=0, sticky="w", padx=5, pady=1)
+        ttk.Label(photo_frame, text="Δ (m_inst → ref.) [mag]:").grid(row=1, column=0, sticky="w", padx=5, pady=1)
         ttk.Entry(photo_frame, textvariable=self.photometry_delta_var, width=8).grid(row=1, column=1, sticky="w", padx=4, pady=1)
-        ttk.Label(photo_frame, text="mag_G = mag_mesurée + Δ", font=("Helvetica", 8), foreground="gray").grid(
-            row=1, column=2, columnspan=2, sticky="w", padx=6, pady=1
-        )
+        ttk.Label(
+            photo_frame,
+            text=(
+                "mag_ref = m_inst + Δ ; coeff. réduction : mag_ref = a×m_inst + b "
+                "(Δ=(a−1)×m_inst + b) ; bande ref. = f (« Filtre utilisé » : G/BP/RP/R/V/B)"
+            ),
+            font=("Helvetica", 8),
+            foreground="gray",
+        ).grid(row=1, column=2, columnspan=2, sticky="w", padx=6, pady=1)
         ttk.Button(photo_frame, text="Appliquer", command=self._apply_photometry_gaia_settings_from_ui).grid(
             row=2, column=0, sticky="w", padx=5, pady=(1, 2)
         )
@@ -819,21 +836,51 @@ class AsteroidPhotometryTab:
             row=2, column=1, sticky="w", padx=4, pady=(1, 2)
         )
 
-        self.photo_button = ttk.Button(photo_frame, text="⭕ SET-UP PHOTOMÉTRIE ", command=self.run_photometry_setup)
-        self.photo_button.grid(row=3, column=0, columnspan=4, pady=2)
+        coeff_check_f = ttk.Frame(photo_frame)
+        coeff_check_f.grid(row=3, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
+        ttk.Checkbutton(
+            coeff_check_f,
+            text="Utiliser coeff. transformation",
+            variable=self._phot_trans_use_var,
+        ).pack(anchor="w")
 
-        self.photo_batch_button = ttk.Button(
-            photo_frame,
-            text="📊 PHOTOMÉTRIE BATCH (Astéroïdes)",
-            command=self.run_photometry_batch
-        )
-        self.photo_batch_button.grid(row=4, column=0, columnspan=4, pady=2)
-
+        coeff_btn_col_wrapper = ttk.Frame(photo_frame)
+        coeff_btn_col_wrapper.grid(row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(4, 2))
+        # Quatre colonnes égales : la colonne des boutons n’occupe que ~25 % (50 % de moins qu’avec 2 colonnes).
+        for _ci in range(4):
+            coeff_btn_col_wrapper.columnconfigure(_ci, weight=1, uniform="phot_btn_q")
+        coeff_actions_f = ttk.Frame(coeff_btn_col_wrapper)
+        coeff_actions_f.grid(row=0, column=0, sticky="ew")
+        _btn_pack_col = {"side": tk.TOP, "fill": tk.X, "pady": (0, 3)}
         ttk.Button(
-            photo_frame,
-            text="🔭 Assistant comparateurs (Gaia + ouvertures)",
-            command=self.launch_selection_window,
-        ).grid(row=5, column=0, columnspan=4, pady=2)
+            coeff_actions_f,
+            text="Charger a,b (CSV / journal)",
+            command=self._load_photometry_trans_coeff_from_journal,
+        ).pack(**_btn_pack_col)
+        self.photo_button = ttk.Button(
+            coeff_actions_f,
+            text="⭕ SET-UP PHOTOMÉTRIE ",
+            command=self.run_photometry_setup,
+        )
+        self.photo_button.pack(**_btn_pack_col)
+        self.photo_batch_button = ttk.Button(
+            coeff_actions_f,
+            text="📊 PHOTOMÉTRIE BATCH (Astéroïdes)",
+            command=self.run_photometry_batch,
+        )
+        self.photo_batch_button.pack(**_btn_pack_col)
+        ttk.Button(
+            coeff_actions_f,
+            text="Photométrie image",
+            command=self.run_photometry_single_image,
+        ).pack(**_btn_pack_col)
+
+        coeff_status_f = ttk.Frame(photo_frame)
+        coeff_status_f.grid(row=5, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
+        self._phot_trans_status_label = ttk.Label(
+            coeff_status_f, text="—", font=("Helvetica", 8), foreground="gray"
+        )
+        self._phot_trans_status_label.pack(anchor="w")
 
         photo_fits_frame = ttk.LabelFrame(
             photo_control_frame, text="Visualisation image (synchronisée)", padding=4
@@ -876,11 +923,6 @@ class AsteroidPhotometryTab:
         ttk.Separator(photo_nav_btns, orient=tk.VERTICAL).pack(
             side=tk.LEFT, fill=tk.Y, padx=4, pady=2
         )
-        ttk.Button(
-            photo_nav_btns,
-            text="Photométrie image",
-            command=self.run_photometry_single_image,
-        ).pack(side=tk.LEFT, padx=2, pady=1)
         photo_nav_zoom = ttk.Frame(photo_nav)
         photo_nav_zoom.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(photo_nav_zoom, text="Zoom :", font=("Helvetica", 8)).pack(
@@ -3146,134 +3188,6 @@ class AsteroidPhotometryTab:
         self.current_selections = selections
         logger.info(f"Photométrie configurée : {len(selections)} étoiles avec apertures")
         messagebox.showinfo("Succès", f"Photométrie configurée : {len(selections)} étoiles sélectionnées")
-    
-    def launch_selection_window(self):
-        """Fenêtre de sélection photométrique avec T1 et étoiles de comparaison."""
-        from core.photometry_pipeline_asteroids import launch_photometry_aperture
-        
-        # Vérifier que T1 a été sélectionné par clic
-        if self.target_t1_sky is None:
-            messagebox.showerror(
-                "Erreur",
-                "T1 non défini. Utilisez « SET-UP PHOTOMÉTRIE » (clic T1 + comparateurs) "
-                "ou placez T1 depuis l’onglet Astrométrie, puis réessayez.",
-            )
-            return
-        
-        # Utiliser les coordonnées T1 sélectionnées par l'utilisateur
-        target_coord = self.target_t1_sky
-        logger.info(f"Utilisation de T1 sélectionné : RA={target_coord.ra.deg:.6f}°, Dec={target_coord.dec.deg:.6f}°")
-        
-        # Initialisation de comp_coords
-        comp_coords = []
-        nx, ny = self.current_data.shape[1], self.current_data.shape[0]
-
-        # Marge de sécurité pour éviter les bords
-        margin = 50  # Marge importante pour s'assurer que les étoiles sont bien visibles
-
-        # Recherche d'étoiles de comparaison : autour de T1 avec un rayon de recherche configurable
-        try:
-            # Recherche autour de T1 plutôt que sur tout le FOV
-            # Rayon de recherche en arcmin (par défaut 10 arcmin autour de T1)
-            search_radius_arcmin = 10.0  # Rayon de recherche autour de T1 (en arcmin)
-            search_radius = search_radius_arcmin * u.arcmin
-            
-            logger.info(f"Recherche de comparateurs autour de T1 (rayon: {search_radius_arcmin} arcmin)")
-
-            # Requête Gaia avec cache autour de T1
-            gaia_table = optimized_query_gaia(
-                target_coord, search_radius,
-                mag_limit=self.gaia_mag_limit_var.get(),
-                gaia_cache=self.gaia_cache
-            )
-
-            if len(gaia_table) == 0:
-                messagebox.showwarning("Avertissement", "Aucune étoile Gaia trouvée pour comparaison")
-            else:
-                # Détection directe des étoiles dans l'image pour s'assurer qu'elles sont visibles
-                user_fwhm = self.fwhm_var.get()
-                threshold_sigma = self.threshold_sigma_var.get()
-                detected_sources = _detect_sources_for_astrometry(
-                    self.current_data, user_fwhm, threshold_sigma, max_sources=500
-                )
-                
-                if len(detected_sources) == 0:
-                    logger.warning("Aucune source détectée dans l'image pour comparaison")
-                else:
-                    # Conversion des sources détectées en coordonnées célestes
-                    detected_sky = self.wcs.pixel_to_world(detected_sources['xcentroid'], detected_sources['ycentroid'])
-                    
-                    # Matching avec Gaia pour obtenir les magnitudes
-                    gaia_sky = SkyCoord(ra=gaia_table['RA_ICRS'], dec=gaia_table['DE_ICRS'], unit=(u.deg, u.deg))
-                    idx, d2d, _ = match_coordinates_sky(detected_sky, gaia_sky)
-                    match_mask = d2d < 3.0 * u.arcsec  # Tolérance de 3" pour le matching
-                    
-                    # Magnitude cible
-                    t_img = Time(self.current_header.get('DATE-OBS', self.current_header.get('DATE')), scale='utc')
-                    target_mag = _interpolate_magnitude_V(self.ephemeris_data, t_img)
-                    
-                    # Filtrage des comparateurs candidats
-                    for i in range(len(detected_sky)):
-                        if not match_mask[i]:
-                            continue  # Pas de match Gaia
-                        
-                        # Vérifier que la source est dans l'image (pas sur les bords)
-                        px = float(detected_sources['xcentroid'][i])
-                        py = float(detected_sources['ycentroid'][i])
-                        
-                        if not (margin <= px < nx - margin and margin <= py < ny - margin):
-                            continue  # Trop proche des bords
-                        
-                        # Correspondance Gaia
-                        gaia_idx = int(idx[i])
-                        if gaia_idx < 0 or gaia_idx >= len(gaia_table):
-                            continue  # Index invalide
-                        
-                        comp_mag = gaia_table['Gmag'][gaia_idx] if 'Gmag' in gaia_table.colnames else None
-                        
-                        if comp_mag is None or not np.isfinite(comp_mag):
-                            continue
-                        
-                        # Exclure les étoiles variables
-                        if 'phot_variable_flag' in gaia_table.colnames:
-                            var_flag = gaia_table['phot_variable_flag'][gaia_idx]
-                            # Le flag peut être 'VARIABLE', True, ou une chaîne indiquant la variabilité
-                            # Exclure si variable (différentes représentations possibles)
-                            if var_flag is not None and var_flag != '':
-                                var_str = str(var_flag).strip().upper()
-                                if var_str in ['VARIABLE', 'TRUE', '1', 'Y', 'YES']:
-                                    logger.debug(f"Comparateur exclu (variable) : px={px:.1f}, py={py:.1f}, mag={comp_mag:.2f}, flag={var_flag}")
-                                    continue
-                        
-                        # Coordonnées célestes de la source détectée
-                        src_sky = detected_sky[i]
-                        
-                        # Exclure T1 (séparation < 5")
-                        sep_from_t1 = target_coord.separation(src_sky).arcsec
-                        if sep_from_t1 < 5.0:
-                            continue  # C'est probablement T1
-                        
-                        # Chercher les comparateurs dans une zone raisonnable autour de T1 (5-300")
-                        # avec une magnitude proche de celle de T1 (±2.5 mag)
-                        if 5.0 < sep_from_t1 < 300.0 and abs(comp_mag - target_mag) <= 2.5:
-                            comp_coords.append(src_sky)
-                            logger.debug(f"Comparateur ajouté : px={px:.1f}, py={py:.1f}, mag={comp_mag:.2f}, sep={sep_from_t1:.1f}\"")
-                            if len(comp_coords) >= 10:  # Limite à 10 comparateurs
-                                break
-
-                logger.info(f"{len(comp_coords)} étoiles de comparaison trouvées (détectées dans l'image)")
-
-        except Exception as e:
-            logger.error(f"Erreur recherche comparateurs : {e}")
-            comp_coords = []
-        
-        launch_photometry_aperture(
-            fits_path=self.current_image_path,
-            target_data={'coord': target_coord},
-            comp_coords_data=[{'coord': c} for c in comp_coords],
-            on_finish=self._on_aperture_finished,
-        ) 
-        
 
     def solve_astrometry_zero_aperture(self, path=None, skip_zero_aperture=False, extrapolation_params=None):
         """Résout l'astrométrie avec optimisations (cache Gaia, KD-tree, apertures intelligentes)."""
@@ -4941,6 +4855,17 @@ class AsteroidPhotometryTab:
             f"Référence: {Path(self.current_image_path).name}\n"
             f"Étoiles configurées: {len(self.current_selections)}"):
             return
+
+        if bool(getattr(self, "_phot_trans_use_var", None)) and self._phot_trans_use_var.get():
+            if self._phot_trans_a is None or self._phot_trans_b is None:
+                messagebox.showwarning(
+                    "Photométrie batch",
+                    "« Utiliser coeff. transformation » est coché mais aucun coefficient a,b n'est chargé.\n\n"
+                    "Cliquez « Charger a,b (CSV / journal) » (même filtre que « Filtre utilisé »), "
+                    "puis relancez le batch — ou décochez la case pour n'utiliser que le flux relatif "
+                    "(mag_T1_fn, sans mag_T1_ref).",
+                )
+                return
         
         # Lancer dans un thread pour ne pas bloquer l'interface
         import threading
@@ -4948,6 +4873,16 @@ class AsteroidPhotometryTab:
         from core.photometry_pipeline_asteroids import process_photometry_series
         self._start_process_log_capture("photométrie batch")
         
+        trans_snapshot = None
+        if bool(getattr(self, "_phot_trans_use_var", None)) and self._phot_trans_use_var.get():
+            if self._phot_trans_a is not None and self._phot_trans_b is not None:
+                trans_snapshot = {
+                    "slope": float(self._phot_trans_a),
+                    "intercept": float(self._phot_trans_b),
+                    "mag_std": self._phot_trans_mag_std,
+                    "ref_band_id": self._phot_trans_ref_band_id or "",
+                }
+
         def worker():
             try:
                 logger.info(f"Début photométrie batch sur {len(self.image_files)} images")
@@ -4999,7 +4934,8 @@ class AsteroidPhotometryTab:
                         "last": self.manual_t1_anchor_last
                     },
                     manual_aperture_overrides=self.photometry_manual_apertures,
-                    manual_aperture_callback=self._request_manual_apertures_for_image
+                    manual_aperture_callback=self._request_manual_apertures_for_image,
+                    transformation_coeff=trans_snapshot,
                 )
                 
                 # Générer le fichier light_curve.txt
@@ -5050,10 +4986,17 @@ class AsteroidPhotometryTab:
 
                 def _batch_ui_success():
                     self.refresh_lightcurve_graphs(silent=True)
+                    _extra = ""
+                    if trans_snapshot is not None:
+                        _extra = (
+                            "\n\nCoeff. transformation : colonnes mag_T1_ref, rms_mag_T1_ref, "
+                            "delta_to_ref, m_inst_T1, trans_ref_band_id dans results.csv."
+                        )
                     messagebox.showinfo(
                         "Succès",
                         f"Photométrie batch terminée !\n\nRésultats: {result_path}\nLight curve: {light_curve_path}"
-                        + (f"\nCSV compilé: {compiled_csv}" if compiled_csv else ""),
+                        + (f"\nCSV compilé: {compiled_csv}" if compiled_csv else "")
+                        + _extra,
                     )
 
                 self.frame.after(0, _batch_ui_success)
@@ -5246,12 +5189,38 @@ class AsteroidPhotometryTab:
                     "Vérifiez la connexion à Internet, le pare-feu, et que les étoiles sont dans Gaia DR3."
                 )
 
-            # Magnitude T1 calibrée sur Gaia G via comparateurs
+            # Magnitude T1 calibrée sur Gaia G (coeff. transformation réduction ou comparateurs)
             mag_t1_g = np.nan
             rms_mag_t1 = np.nan
             zp_std = np.nan
             delta_auto = np.nan
-            if flux_t1 > 0 and len(comp_mag_data) > 0:
+            used_trans_coeff = False
+            use_tr = bool(getattr(self, "_phot_trans_use_var", None)) and self._phot_trans_use_var.get()
+            ta = getattr(self, "_phot_trans_a", None)
+            tb = getattr(self, "_phot_trans_b", None)
+            coeff_ok = (
+                ta is not None
+                and tb is not None
+                and np.isfinite(float(ta))
+                and np.isfinite(float(tb))
+            )
+            if flux_t1 > 0 and use_tr and coeff_ok:
+                m_inst_t1 = -2.5 * np.log10(flux_t1)
+                a, b = float(ta), float(tb)
+                mag_t1_g = float(a * m_inst_t1 + b)
+                delta_auto = float((a - 1.0) * m_inst_t1 + b)
+                self.photometry_delta_to_gaia_g = delta_auto
+                self.photometry_delta_var.set(delta_auto)
+                zp_std = float("nan")
+                t1_mag_err = float(1.0857 * (np.sqrt(err_t1_sq) / flux_t1)) if flux_t1 > 0 else 0.0
+                ms = getattr(self, "_phot_trans_mag_std", None)
+                inst_term = float(abs(a) * t1_mag_err)
+                if ms is not None and np.isfinite(float(ms)) and float(ms) >= 0.0:
+                    rms_mag_t1 = float(np.sqrt(max(inst_term**2 + float(ms) ** 2, 0.0)))
+                else:
+                    rms_mag_t1 = inst_term
+                used_trans_coeff = True
+            elif flux_t1 > 0 and len(comp_mag_data) > 0:
                 m_inst_t1 = -2.5 * np.log10(flux_t1)
                 zp_vals = []
                 for c in comp_mag_data:
@@ -5261,7 +5230,6 @@ class AsteroidPhotometryTab:
                 if len(zp_vals) > 0:
                     zp_med = float(np.median(zp_vals))
                     zp_std = float(np.std(zp_vals)) if len(zp_vals) > 1 else 0.03
-                    # Delta G-filtre auto estimé depuis comparateurs Gaia
                     delta_auto = float(zp_med)
                     self.photometry_delta_to_gaia_g = delta_auto
                     self.photometry_delta_var.set(delta_auto)
@@ -5313,18 +5281,26 @@ class AsteroidPhotometryTab:
                 row_df.to_csv(out_csv, index=False)
 
             logger.info(f"Photométrie image enregistrée : {out_csv}")
+            if used_trans_coeff:
+                _ref_id_msg = getattr(self, "_phot_trans_ref_band_id", None) or "gaia_g"
+            else:
+                _ref_id_msg = "gaia_g"
+            _ref_lab_msg = ref_band_label_for_id(_ref_id_msg)
             messagebox.showinfo(
                 "Photométrie image",
                 (
                     f"Image traitée : {Path(self.current_image_path).name}\n"
                     + (
-                        f"mag_T1(G) = {mag_t1_g:.3f} ± {rms_mag_t1:.3f}\n"
-                        f"Δ(G-filtre) auto = {delta_auto:+.3f} mag\n"
-                        f"(flux rel. T1/C = {rel_flux:.6f})\n"
+                        (
+                            f"mag_T1 (réf. {_ref_lab_msg}) = {mag_t1_g:.3f} ± {rms_mag_t1:.3f}\n"
+                            f"Δ = {delta_auto:+.3f} mag "
+                            f"({'coeff. réduction a,b' if used_trans_coeff else 'comparateurs Gaia G'})\n"
+                            f"(flux rel. T1/C = {rel_flux:.6f})\n"
+                        )
                         if np.isfinite(mag_t1_g)
                         else (
-                            f"mag_T1(G) indisponible : magnitudes Gaia G introuvables pour les comparateurs\n"
-                            f"(réseau / Vizier CDS / archive Gaia), ou flux comparateur non valide.\n"
+                            "mag_T1 indisponible : chargez a,b (CSV / journal) et cochez le coeff., "
+                            "ou vérifiez les comparateurs Gaia G / flux.\n"
                             f"flux rel. T1/C = {rel_flux:.6f}\n"
                         )
                     )
@@ -5393,7 +5369,81 @@ class AsteroidPhotometryTab:
         self.photometry_settings_confirmed = True
         self.photometry_filter_var.set("G")
         self.photometry_delta_var.set(0.0)
+        self._phot_trans_a = None
+        self._phot_trans_b = None
+        self._phot_trans_mag_std = None
+        self._phot_trans_ref_band_id = None
+        self._phot_trans_use_var.set(False)
+        if getattr(self, "_phot_trans_status_label", None):
+            self._phot_trans_status_label.config(text="—")
         logger.info("Réglages Gaia réinitialisés : filtre=G, delta_to_G=0.000")
+
+    def _load_photometry_trans_coeff_from_journal(self):
+        """Charge (a, b) depuis le CSV paire ou le journal ; bande catalogue déduite du « Filtre utilisé »."""
+        filt = (self.photometry_filter_var.get() or "").strip()
+        if not filt:
+            messagebox.showwarning(
+                "Coefficient",
+                "Indiquez d'abord le filtre utilisé (ex. G, BP, RP, R, V, B) pour le faire correspondre aux tables.",
+            )
+            return
+        ref_id = ref_band_id_for_observer_filter(filt)
+        self._phot_trans_ref_band_id = ref_id
+        res = load_latest_transformation_coefficient(filt, ref_band_id=ref_id)
+        pair_hint = pair_coefficient_csv_path(filt, ref_id)
+        ref_lab = ref_band_label_for_id(ref_id)
+        if res is None:
+            self._phot_trans_a = None
+            self._phot_trans_b = None
+            self._phot_trans_mag_std = None
+            self._phot_trans_ref_band_id = None
+            if getattr(self, "_phot_trans_status_label", None):
+                self._phot_trans_status_label.config(text="aucune entrée")
+            messagebox.showwarning(
+                "Coefficient",
+                (
+                    f"Aucune entrée pour filtre « {filt} » et bande catalogue « {ref_lab} » "
+                    f"(ref_band_id={ref_id}).\n\n"
+                    f"Fichier paire attendu : {pair_hint.name}\n"
+                    "ou ligne correspondante dans coefficients_journal.csv.\n\n"
+                    "Enregistrez les coefficients depuis l'onglet Réduction (même filtre + même bande de référence) ; "
+                    "optionnel : « Médiane 2σ → CSV paire »."
+                ),
+            )
+            return
+        a, b, desc, mag_std = res
+        self._phot_trans_a = float(a)
+        self._phot_trans_b = float(b)
+        self._phot_trans_mag_std = float(mag_std) if mag_std is not None else None
+        if getattr(self, "_phot_trans_status_label", None):
+            extra = (
+                f"  σ_fit={self._phot_trans_mag_std:.3f}"
+                if self._phot_trans_mag_std is not None
+                else ""
+            )
+            self._phot_trans_status_label.config(
+                text=f"{ref_id}  a={a:.5f}  b={b:+.4f}{extra}"
+            )
+        logger.info(
+            "Coeff. transformation photométrie : ref_band_id=%s a=%s b=%s mag_std=%s (%s)",
+            ref_id,
+            a,
+            b,
+            self._phot_trans_mag_std,
+            desc,
+        )
+        msg_std = (
+            f"\nmag_std (incertitude fit) = {self._phot_trans_mag_std:.4f} mag\n"
+            if self._phot_trans_mag_std is not None
+            else ""
+        )
+        messagebox.showinfo(
+            "Coefficient",
+            f"Bande catalogue : {ref_lab}\n"
+            f"a = {a:.6f}\nb = {b:.6f}{msg_std}\n{desc}\n\n"
+            "Cochez « Utiliser coeff. transformation » puis « Photométrie image » : "
+            f"mag_ref ({ref_lab}) = a×m_inst + b ; le champ Δ affiche (a−1)×m_inst + b pour l'image courante.",
+        )
 
     def _gaia_phot_g_mean_tap_cone(
         self,

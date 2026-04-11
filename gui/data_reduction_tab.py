@@ -17,6 +17,7 @@ from core.image_processor import ImageProcessor, PipelineControl
 from core.transformation_coefficients import (
     REFERENCE_BAND_CHOICES,
     append_coefficient_record,
+    append_median_2sigma_aggregate_row_to_pair_csv,
     compute_instrumental_and_catalog,
     fit_transformation,
     query_ebv_irsa_for_fits_center,
@@ -419,6 +420,12 @@ class CCDProcGUI:
         ttk.Button(r3, text="Sauvegarder le coefficient", command=self._trans_save_coefficients, width=24).pack(
             side=tk.LEFT, padx=2
         )
+        ttk.Button(
+            r3,
+            text="Médiane 2σ → CSV paire",
+            command=self._trans_append_median_2sigma_aggregate,
+            width=22,
+        ).pack(side=tk.LEFT, padx=2)
         ttk.Label(
             r3,
             text=f"Dossier : {transformation_storage_dir()}",
@@ -670,6 +677,29 @@ class CCDProcGUI:
             self._showinfo("Sauvegarde", f"Ligne ajoutée dans :\n{out}")
         except Exception as e:
             self._showerror("Sauvegarde", str(e))
+
+    def _trans_append_median_2sigma_aggregate(self):
+        """Ajoute une ligne de synthèse (médiane a,b après clipping 2σ) dans le CSV paire filtre×bande."""
+        obs = self._trans_obs_filter_var.get().strip() or "UNKNOWN"
+        ref_label = self._trans_ref_combo.get()
+        ref_id = self._trans_ref_band_id()
+        try:
+            out = append_median_2sigma_aggregate_row_to_pair_csv(
+                obs, ref_id, ref_band_label=ref_label
+            )
+            self.log_message(f"📊 Ligne agrégée médiane 2σ écrite : {out}")
+            self._showinfo(
+                "CSV paire",
+                f"Fichier mis à jour (médiane des pentes et intercepts après exclusion > 2σ) :\n{out}\n\n"
+                "La dernière ligne contient mag_std (médiane des RMS des mesures retenues). "
+                "Le chargement côté astéroïdes lit ce fichier en priorité.",
+            )
+        except FileNotFoundError as e:
+            self._showwarning("CSV paire", str(e))
+        except ValueError as e:
+            self._showwarning("Agrégation", str(e))
+        except Exception as e:
+            self._showerror("Agrégation", str(e))
 
     # ------------------------------------------------------------------
     # Sélection des fichiers
