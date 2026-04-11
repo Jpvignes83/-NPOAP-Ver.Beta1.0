@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 # Seuil pour le calcul des coefficients : rejette les points trop « brillants » (saturés / aberrants).
 MAGNITUDE_MIN_FOR_COEFF = -15.0
 
+# SNR minimal sur le flux net d'ouverture (ciel soustrait) pour entrer dans l'ajustement transformation.
+MIN_SNR_FOR_TRANS_COEFF = 20.0
+
+# Ligne de synthèse (médiane après clipping 2σ) écrite dans le CSV paire ; exclue des recalculs suivants.
+AGGREGATE_ROW_FITS_MARKER = "__AGG_MEDIAN_2SIG__"
+
+
+def safe_coeff_csv_token(s: str) -> str:
+    """Fragment de nom de fichier pour ``{filtre}__{bande_ref}.csv`` (comme ``append_coefficient_record``)."""
+    t = re.sub(r"[^\w.\-]+", "_", str(s), flags=re.UNICODE).strip("_")
+    return t[:80] if t else "unknown"
+
 
 def transformation_storage_dir() -> Path:
     d = Path.home() / ".npoap" / "Coeftransformation"
@@ -395,12 +407,18 @@ def compute_instrumental_and_catalog(
     dao_threshold_sigma: float = 5.0,
     mag_limit_gaia: float = 18.0,
     mag_limit_apass_v: float = 16.5,
+    min_snr: float = MIN_SNR_FOR_TRANS_COEFF,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Retourne (x, y, mag_inst, mag_cat_obs, mag_cat_deredden, flux) pour chaque étoile appariée.
 
     On ne conserve que les étoiles pour lesquelles la magnitude instrumentale et la magnitude
     catalogue observée sont strictement supérieures à ``MAGNITUDE_MIN_FOR_COEFF`` (-15).
+
+    Si ``min_snr`` > 0, on écarte les sources dont le SNR du flux net (ouverture moins ciel
+    annulaire) est strictement inférieur à ce seuil. Le bruit est estimé à partir de l'écart-type
+    par pixel ``std`` (``sigma_clipped_stats`` sur l'image), en supposant un bruit blanc :
+    ``σ_net ≈ std × √(N_ap + N_ap² / N_an)`` avec ``N_ap``, ``N_an`` les aires en pixels.
     """
     try:
         from photutils.detection import DAOStarFinder
@@ -454,9 +472,21 @@ def compute_instrumental_and_catalog(
         sky = aperture_photometry(data, an)
         bkg = float(sky["aperture_sum"][0] / an.area)
         fl = float(phot["aperture_sum"][0] - bkg * ap.area)
-        if fl > 0 and np.isfinite(fl):
-            fluxes.append(fl)
-            valid_idx.append(i)
+        if not (fl > 0 and np.isfinite(fl)):
+            continue
+        if min_snr > 0.0:
+            n_ap = float(ap.area)
+            n_an = float(an.area)
+            if n_ap <= 0.0 or n_an <= 0.0:
+                continue
+            sigma_net = float(std) * float(np.sqrt(n_ap + (n_ap**2) / n_an))
+            if not (sigma_net > 0.0 and np.isfinite(sigma_net)):
+                continue
+            snr = fl / sigma_net
+            if not (np.isfinite(snr) and snr >= float(min_snr)):
+                continue
+        fluxes.append(fl)
+        valid_idx.append(i)
 
     if not fluxes:
         raise RuntimeError("Photométrie d'ouverture : aucun flux positif.")
@@ -567,6 +597,338 @@ def fit_transformation(mag_inst: np.ndarray, mag_cat_der: np.ndarray) -> tuple[f
     return float(a), float(b), rms, int(len(x))
 
 
+def _norm_obs_filter(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "").strip().lower())
+
+
+def filters_match_for_trans_coeff(obs_ui: str, obs_journal: str) -> bool:
+    """Correspondance souple entre le filtre saisi (astéroïdes) et celui du journal réduction."""
+    a = _norm_obs_filter(obs_ui)
+    b = _norm_obs_filter(obs_journal)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def ref_band_label_for_id(ref_band_id: str) -> str:
+    for lab, bid in REFERENCE_BAND_CHOICES:
+        if bid == ref_band_id:
+            return lab
+    return str(ref_band_id)
+
+
+def ref_band_id_for_observer_filter(obs_filter: str) -> str:
+    """
+    Bande catalogue cible pour les coefficients de transformation, déduite du **filtre observateur**
+    (champ « Filtre utilisé » / en-tête FITS).
+
+    Correspondances : **G** → Gaia G ; **BP**, **g_bp**, etc. → Gaia BP ; **RP**, **g_rp** → Gaia RP ;
+    **B** → Johnson B (APASS) ; **V** → Johnson V ; **R**, **Rc** (seuls ou explicites) → Johnson Rc.
+
+    Filtre non reconnu : retourne ``gaia_g`` (comportement historique) avec trace en log.
+    """
+    n = _norm_obs_filter(obs_filter)
+    if not n:
+        return "gaia_g"
+    # Sous-chaînes Gaia RP/BP avant tout (évite qu'une lettre « b » absorbe « bp »).
+    if "rp" in n or n in ("grp", "g_rp", "gaia_rp"):
+        return "gaia_rp"
+    if "bp" in n or n in ("gbp", "g_bp", "gaia_bp"):
+        return "gaia_bp"
+    if n in (
+        "johnson_rc",
+        "johnsonr",
+        "rc",
+        "r_c",
+        "cousinsr",
+        "cousins_rc",
+        "r",
+        "rcousins",
+    ):
+        return "johnson_rc"
+    if n in ("johnson_v", "johnsonv", "v"):
+        return "johnson_v"
+    if n in ("johnson_b", "johnsonb", "b"):
+        return "johnson_b"
+    if n in ("gaia_g", "gaiag", "gg", "g", "gaia"):
+        return "gaia_g"
+    logger.info(
+        "Filtre observateur %r : aucune règle dédiée ; bande catalogue par défaut gaia_g pour les coefficients.",
+        obs_filter,
+    )
+    return "gaia_g"
+
+
+def pair_coefficient_csv_path(obs_filter: str, ref_band_id: str) -> Path:
+    """Chemin du CSV paire ex. ``G__Gaia_G.csv`` pour filtre observateur ``G`` et bande ``gaia_g``."""
+    root = transformation_storage_dir()
+    obs_t = safe_coeff_csv_token(obs_filter)
+    ref_t = safe_coeff_csv_token(ref_band_label_for_id(ref_band_id))
+    return root / f"{obs_t}__{ref_t}.csv"
+
+
+def _read_coefficient_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return [dict(r) for r in reader]
+
+
+def _mask_within_2sigma_1d(vals: np.ndarray) -> np.ndarray:
+    """Masque booléen : valeurs finies et dans [médiane − 2σ, médiane + 2σ] (σ = écart-type échantillon)."""
+    v = np.asarray(vals, dtype=float)
+    ok = np.isfinite(v)
+    if int(np.count_nonzero(ok)) < 3:
+        return ok
+    vv = v[ok]
+    med = float(np.median(vv))
+    std = float(np.std(vv))
+    if not np.isfinite(std) or std <= 0:
+        return ok
+    return ok & (np.abs(v - med) <= 2.0 * std)
+
+
+def median_slope_intercept_after_2sigma_clip(
+    rows: list[dict[str, str]],
+    *,
+    exclude_aggregate_marker: str = AGGREGATE_ROW_FITS_MARKER,
+) -> tuple[float, float, int, float]:
+    """
+    Médiane de la pente et de l'ordonnée à l'origine après exclusion des valeurs > 2σ
+    (indépendamment sur les pentes et sur les intercepts, intersection des masques).
+
+    Returns
+    -------
+    slope_med, intercept_med, n_rows_used, mag_std_med
+        ``mag_std_med`` = médiane des colonnes ``mag_std`` ou ``rms`` des lignes retenues
+        (incertitude-type pour les magnitudes issues du fit), ou NaN si aucune valeur.
+    """
+    slopes: list[float] = []
+    inter: list[float] = []
+    rms_or_ms: list[float] = []
+    for r in rows:
+        if (r.get("fits") or "").strip() == exclude_aggregate_marker:
+            continue
+        try:
+            a = float(r["slope"])
+            b = float(r["intercept"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (np.isfinite(a) and np.isfinite(b)):
+            continue
+        slopes.append(a)
+        inter.append(b)
+        ms = None
+        for key in ("mag_std", "rms"):
+            if key not in r or r[key] is None or str(r[key]).strip() == "":
+                continue
+            try:
+                ms = float(r[key])
+            except (ValueError, TypeError):
+                continue
+            if np.isfinite(ms):
+                break
+            ms = None
+        rms_or_ms.append(float(ms) if ms is not None else np.nan)
+
+    n = len(slopes)
+    if n == 0:
+        raise ValueError("Aucune ligne exploitable (slope/intercept numériques).")
+    sa = np.asarray(slopes, dtype=float)
+    sb = np.asarray(inter, dtype=float)
+    ma = _mask_within_2sigma_1d(sa)
+    mb = _mask_within_2sigma_1d(sb)
+    m = ma & mb
+    if not np.any(m):
+        m = np.ones(n, dtype=bool)
+
+    a_med = float(np.median(sa[m]))
+    b_med = float(np.median(sb[m]))
+    n_used = int(np.count_nonzero(m))
+    rms_arr = np.asarray(rms_or_ms, dtype=float)[m]
+    rms_fin = rms_arr[np.isfinite(rms_arr)]
+    mag_std_med = float(np.median(rms_fin)) if rms_fin.size > 0 else float("nan")
+    return a_med, b_med, n_used, mag_std_med
+
+
+def append_median_2sigma_aggregate_row_to_pair_csv(
+    obs_filter: str,
+    ref_band_id: str,
+    *,
+    ref_band_label: str | None = None,
+) -> Path:
+    """
+    Réécrit le CSV paire ``{filtre}__{bande}.csv`` : retire les anciennes lignes ``__AGG_MEDIAN_2SIG__``,
+    recalcule la médiane (pente, intercept) après clipping 2σ sur les lignes restantes,
+    puis ajoute **une** ligne de synthèse (dernière ligne = « la plus récente » pour le chargeur).
+
+    La ligne de synthèse inclut ``mag_std`` (médiane des ``mag_std``/``rms`` des lignes retenues) lorsque
+    l'en-tête du fichier est migré pour contenir cette colonne.
+    """
+    obs_filter = (obs_filter or "").strip() or "UNKNOWN"
+    ref_lab = ref_band_label or ref_band_label_for_id(ref_band_id)
+    path = pair_coefficient_csv_path(obs_filter, ref_band_id)
+    rows = _read_coefficient_csv_rows(path)
+    if not rows:
+        raise FileNotFoundError(
+            f"Aucune donnée dans {path.name}. Enregistrez au moins un coefficient "
+            f"(Réduction → Sauvegarder le coefficient) pour ce filtre et cette bande."
+        )
+
+    a_med, b_med, n_used, mag_std_med = median_slope_intercept_after_2sigma_clip(rows)
+    base_fieldnames = [
+        "timestamp_utc",
+        "obs_filter",
+        "ref_band",
+        "ref_band_id",
+        "slope",
+        "intercept",
+        "rms",
+        "n_stars",
+        "ebv",
+        "fits",
+    ]
+    fieldnames = list(base_fieldnames) + ["mag_std"]
+
+    data_rows = [r for r in rows if (r.get("fits") or "").strip() != AGGREGATE_ROW_FITS_MARKER]
+    for r in data_rows:
+        if "mag_std" in fieldnames and "mag_std" not in r:
+            r["mag_std"] = r.get("mag_std", "") or ""
+
+    ts = datetime.now(timezone.utc).isoformat()
+    rms_str = f"{mag_std_med:.6f}" if np.isfinite(mag_std_med) else ""
+    mag_std_str = rms_str
+    new_row: dict[str, str] = {
+        "timestamp_utc": ts,
+        "obs_filter": obs_filter,
+        "ref_band": ref_lab,
+        "ref_band_id": ref_band_id,
+        "slope": f"{a_med:.6f}",
+        "intercept": f"{b_med:.6f}",
+        "rms": rms_str,
+        "n_stars": str(n_used),
+        "ebv": "",
+        "fits": AGGREGATE_ROW_FITS_MARKER,
+        "mag_std": mag_std_str,
+    }
+    for k in fieldnames:
+        if k not in new_row:
+            new_row[k] = ""
+
+    out_rows: list[dict[str, str]] = []
+    for r in data_rows:
+        out = {fn: (r.get(fn) or "") for fn in fieldnames}
+        out_rows.append(out)
+    out_rows.append({fn: new_row.get(fn, "") for fn in fieldnames})
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in out_rows:
+            w.writerow(r)
+
+    logger.info(
+        "CSV paire agrégé médiane 2σ : %s (n_retenu=%s, a=%.6f, b=%.6f, mag_std=%s)",
+        path,
+        n_used,
+        a_med,
+        b_med,
+        mag_std_str or "—",
+    )
+    return path
+
+
+def _parse_mag_std_from_row(row: dict[str, str]) -> float | None:
+    """Lit ``mag_std`` ou, à défaut, ``rms`` (RMS du fit réduction) comme incertitude magnitude."""
+    raw_ms = (row.get("mag_std") or "").strip()
+    if raw_ms:
+        try:
+            v = float(raw_ms)
+            return v if np.isfinite(v) else None
+        except (ValueError, TypeError):
+            pass
+    raw_r = (row.get("rms") or "").strip()
+    if raw_r:
+        try:
+            v = float(raw_r)
+            return v if np.isfinite(v) else None
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def load_latest_transformation_coefficient(
+    obs_filter: str,
+    *,
+    ref_band_id: str = "gaia_g",
+    journal_path: Path | None = None,
+) -> tuple[float, float, str, float | None] | None:
+    """
+    Dernière ligne pertinente : d'abord le CSV paire ``{filtre}__{bande}.csv`` s'il existe,
+    sinon le journal ``coefficients_journal.csv``.
+
+    Retourne ``(a, b, description_courte, mag_std)`` avec ``mag_cat ≈ a × m_inst + b`` (réduction).
+    ``mag_std`` provient de la colonne du même nom si présente, sinon ``None`` (utiliser seulement
+    l'erreur instrumentale côté flux).
+    """
+    obs_filter = (obs_filter or "").strip()
+    if not obs_filter:
+        return None
+
+    pp = pair_coefficient_csv_path(obs_filter, ref_band_id)
+    if pp.is_file():
+        prow = _read_coefficient_csv_rows(pp)
+        for row in reversed(prow):
+            rid = (row.get("ref_band_id") or "").strip()
+            if rid and rid != ref_band_id:
+                continue
+            jf = row.get("obs_filter") or ""
+            if jf and not filters_match_for_trans_coeff(obs_filter, jf):
+                continue
+            try:
+                a = float(row["slope"])
+                b = float(row["intercept"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if not (np.isfinite(a) and np.isfinite(b)):
+                continue
+            ts = (row.get("timestamp_utc") or "")[:19]
+            rms = row.get("rms", "")
+            desc = f"{pp.name} @ {ts}, RMS={rms}"
+            mag_std = _parse_mag_std_from_row(row)
+            return (a, b, desc, mag_std)
+
+    jp = journal_path or (transformation_storage_dir() / "coefficients_journal.csv")
+    if not jp.is_file():
+        return None
+    rows: list[dict[str, str]] = []
+    with jp.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(dict(row))
+    for row in reversed(rows):
+        rid = (row.get("ref_band_id") or "").strip()
+        if rid != ref_band_id:
+            continue
+        jf = row.get("obs_filter") or ""
+        if not filters_match_for_trans_coeff(obs_filter, jf):
+            continue
+        try:
+            a = float(row["slope"])
+            b = float(row["intercept"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (np.isfinite(a) and np.isfinite(b)):
+            continue
+        ts = (row.get("timestamp_utc") or "")[:19]
+        rms = row.get("rms", "")
+        desc = f"{jp.name} @ {ts}, RMS={rms}"
+        return (a, b, desc, _parse_mag_std_from_row(row))
+    return None
+
+
 def append_coefficient_record(
     obs_filter: str,
     ref_band_label: str,
@@ -580,10 +942,6 @@ def append_coefficient_record(
 ) -> Path:
     root = transformation_storage_dir()
     ts = datetime.now(timezone.utc).isoformat()
-
-    def _safe(s: str) -> str:
-        s = re.sub(r"[^\w.\-]+", "_", str(s), flags=re.UNICODE).strip("_")
-        return s[:80] if s else "unknown"
 
     row = {
         "timestamp_utc": ts,
@@ -606,7 +964,7 @@ def append_coefficient_record(
             w.writeheader()
         w.writerow(row)
 
-    pair_path = root / f"{_safe(obs_filter)}__{_safe(ref_band_label)}.csv"
+    pair_path = root / f"{safe_coeff_csv_token(obs_filter)}__{safe_coeff_csv_token(ref_band_label)}.csv"
     pair_new = not pair_path.exists() or pair_path.stat().st_size == 0
     with pair_path.open("a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)

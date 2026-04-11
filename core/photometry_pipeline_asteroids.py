@@ -673,10 +673,25 @@ def launch_photometry_aperture(fits_path, target_data, comp_coords_data, variabl
 # 3. PIPELINE BATCH
 # -------------------------------------------------------------------
 
-def process_photometry_series(folder, target_coord, comps, ref_image, selections=None, min_snr=5.0, variable_flags=None, progress_callback=None, ephemeris_data=None, astrometry_positions=None, manual_t1_anchors=None, manual_aperture_overrides=None, manual_aperture_callback=None):
+def process_photometry_series(
+    folder,
+    target_coord,
+    comps,
+    ref_image,
+    selections=None,
+    min_snr=5.0,
+    variable_flags=None,
+    progress_callback=None,
+    ephemeris_data=None,
+    astrometry_positions=None,
+    manual_t1_anchors=None,
+    manual_aperture_overrides=None,
+    manual_aperture_callback=None,
+    transformation_coeff=None,
+):
     """
     Ex?cute la photom?trie en s?rie.
-    
+
     Parameters
     ----------
     ephemeris_data : Table, optional
@@ -685,9 +700,27 @@ def process_photometry_series(folder, target_coord, comps, ref_image, selections
     astrometry_positions : dict, optional
         Dictionnaire {nom_fichier: {'ra_deg': float, 'dec_deg': float, 'jd_utc': float}}.
         Si fourni, les positions astrom?triques mesur?es (ADES) seront utilis?es en priorit? pour suivre T1.
+    transformation_coeff : dict, optional
+        Si fourni : ``{"slope": a, "intercept": b, "mag_std": optional, "ref_band_id": optional}`` (réduction NPOAP).
+        Pour chaque image avec flux T1 > 0 : ``mag_ref = a * m_inst + b`` avec ``m_inst = -2.5 log10(flux)``.
     """
-    
     folder = Path(folder)
+    _trans = transformation_coeff
+    if _trans is not None:
+        try:
+            if not (
+                isinstance(_trans, dict)
+                and np.isfinite(float(_trans["slope"]))
+                and np.isfinite(float(_trans["intercept"]))
+            ):
+                _trans = None
+        except (KeyError, TypeError, ValueError):
+            _trans = None
+    if _trans is not None:
+        logger.info(
+            "Batch photométrie : coefficients transformation actifs (ref_band_id=%s).",
+            _trans.get("ref_band_id") or "—",
+        )
     manual_aperture_overrides = manual_aperture_overrides or {}
     fits_files = sorted(folder.glob("*.fits"))
     total = len(fits_files)
@@ -1362,6 +1395,32 @@ def process_photometry_series(folder, target_coord, comps, ref_image, selections
                 row["rel_flux_T1"] = rel_flux
                 row["rel_flux_err_T1"] = err_final
 
+                if _trans is not None:
+                    rid = str(_trans.get("ref_band_id") or "")
+                    if np.isfinite(flux_t1_net) and flux_t1_net > 0:
+                        a = float(_trans["slope"])
+                        b = float(_trans["intercept"])
+                        m_inst = float(-2.5 * np.log10(flux_t1_net))
+                        row["m_inst_T1"] = round(m_inst, 6)
+                        row["mag_T1_ref"] = round(float(a * m_inst + b), 6)
+                        row["delta_to_ref"] = round(float((a - 1.0) * m_inst + b), 6)
+                        t1_mag_err = float(1.0857 * (np.sqrt(err_t1_sq) / flux_t1_net))
+                        inst_term = float(abs(a) * t1_mag_err)
+                        ms = _trans.get("mag_std")
+                        if ms is not None and np.isfinite(float(ms)) and float(ms) >= 0.0:
+                            row["rms_mag_T1_ref"] = round(
+                                float(np.sqrt(max(inst_term**2 + float(ms) ** 2, 0.0))), 6
+                            )
+                        else:
+                            row["rms_mag_T1_ref"] = round(inst_term, 6)
+                        row["trans_ref_band_id"] = rid
+                    else:
+                        row["m_inst_T1"] = np.nan
+                        row["mag_T1_ref"] = np.nan
+                        row["rms_mag_T1_ref"] = np.nan
+                        row["delta_to_ref"] = np.nan
+                        row["trans_ref_band_id"] = rid
+
                 results.append(row)
 
                 if comps_total_this_image > 0:
@@ -1420,14 +1479,30 @@ def process_photometry_series(folder, target_coord, comps, ref_image, selections
         )
         df["mag_T1_fn"] = np.round(_mag, 3)
         df["mag_err_T1_fn"] = np.round(_mag_e, 3)
+        for _c in ("mag_T1_ref", "rms_mag_T1_ref", "delta_to_ref"):
+            if _c in df.columns:
+                df[_c] = df[_c].round(3)
 
         # Ordre des colonnes pr?f?rentiel (mesures principales en mag, 3 dec.)
         cols_priority = [
-            'slice', 'JD-UTC', 'AIRMASS', 'FWHM_Mean',
-            'mag_T1_fn', 'mag_err_T1_fn',
-            'rel_flux_T1_fn', 'rel_flux_T1_fn_residual',
-            'rel_flux_T1', 'rel_flux_err_T1'
+            "slice",
+            "JD-UTC",
+            "AIRMASS",
+            "FWHM_Mean",
+            "mag_T1_fn",
+            "mag_err_T1_fn",
+            "mag_T1_ref",
+            "rms_mag_T1_ref",
+            "delta_to_ref",
+            "m_inst_T1",
+            "trans_ref_band_id",
+            "rel_flux_T1_fn",
+            "rel_flux_T1_fn_residual",
+            "rel_flux_T1",
+            "rel_flux_err_T1",
         ]
+        # Ne garder en tête que les colonnes transformation présentes
+        cols_priority = [c for c in cols_priority if c in df.columns]
         df = df[cols_priority + [c for c in df.columns if c not in cols_priority]]
 
         # Export final
@@ -1456,9 +1531,19 @@ class PhotometryPipeline:
     def match_sources_with_gaia(df, sr=2.0, col="phot_g_mean_mag"): return match_sources_with_gaia(df, sr, col)
     def launch_photometry_aperture(self, fits_path, target_coord, comp_coords, variable_flags=None, on_finish=None):
         return launch_photometry_aperture(fits_path, target_coord, comp_coords, variable_flags, on_finish)
-    def process_photometry_series(self, folder, target_coord, comps, 
-                                  ref_image, selections=None, 
-                                  min_snr=5.0, variable_flags=None, progress_callback=None, ephemeris_data=None):
+    def process_photometry_series(
+        self,
+        folder,
+        target_coord,
+        comps,
+        ref_image,
+        selections=None,
+        min_snr=5.0,
+        variable_flags=None,
+        progress_callback=None,
+        ephemeris_data=None,
+        transformation_coeff=None,
+    ):
         return process_photometry_series(
             folder=folder,
             target_coord=target_coord,
@@ -1468,5 +1553,6 @@ class PhotometryPipeline:
             min_snr=min_snr,
             variable_flags=variable_flags,
             progress_callback=progress_callback,
-            ephemeris_data=ephemeris_data
+            ephemeris_data=ephemeris_data,
+            transformation_coeff=transformation_coeff,
         )
