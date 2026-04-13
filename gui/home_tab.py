@@ -59,9 +59,9 @@ class HomeTab(ttk.Frame):
         self.config_data = {
             "observatory": {
                 "name": OBSERVATORY.get("name", ""),
-                "latitude": OBSERVATORY.get("latitude", 0.0),
-                "longitude": OBSERVATORY.get("longitude", 0.0),
-                "elevation": OBSERVATORY.get("elevation", 0.0),
+                "latitude": float(OBSERVATORY.get("latitude", OBSERVATORY.get("lat", 0.0))),
+                "longitude": float(OBSERVATORY.get("longitude", OBSERVATORY.get("lon", 0.0))),
+                "elevation": float(OBSERVATORY.get("elevation", OBSERVATORY.get("elev", 0.0))),
                 "timezone": OBSERVATORY.get("timezone", "UTC"),
             },
             "equipment": {
