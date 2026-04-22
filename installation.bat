@@ -181,27 +181,27 @@ if not defined SKIP_PYTHON (
     set PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON_VERSION%-amd64.exe
     set PYTHON_INSTALLER=%TEMP%\python-%PYTHON_VERSION%-amd64.exe
     
-    powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_INSTALLER%'}"
+    powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '!PYTHON_URL!' -OutFile '!PYTHON_INSTALLER!'}"
     
-    if exist "%PYTHON_INSTALLER%" (
+    if exist "!PYTHON_INSTALLER!" (
         echo Installation de Python 3.11.9 en cours...
         echo %YELLOW%Ne fermez pas cette fenetre : installation silencieuse...%RESET%
         REM Ne pas utiliser start /wait "chemin.exe" : le 1er guillemet est le TITRE, pas l'exe.
-        "%PYTHON_INSTALLER%" /quiet InstallAllUsers=1 PrependPath=1
+        "!PYTHON_INSTALLER!" /quiet InstallAllUsers=1 PrependPath=1
         if errorlevel 1 (
-            del "%PYTHON_INSTALLER%" >nul 2>&1
+            del "!PYTHON_INSTALLER!" >nul 2>&1
             echo %RED%ERREUR: echec de l'installateur Python.%RESET%
             pause
             exit /b 1
         )
-        del "%PYTHON_INSTALLER%" >nul 2>&1
+        del "!PYTHON_INSTALLER!" >nul 2>&1
         
         REM Attendre un peu et recharger PATH depuis le registre
         timeout /t 3 /nobreak >nul
         for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "PATH=%%B"
         
         python --version >nul 2>&1
-        if %errorLevel% equ 0 (
+        if !errorLevel! equ 0 (
             echo %GREEN%Python installe avec succes!%RESET%
         ) else (
             echo %YELLOW%ATTENTION: Python n'est pas encore dans le PATH%RESET%
@@ -595,6 +595,7 @@ echo   KBMOD sous WSL/Linux ........... install_kbmod_wsl.bat
 echo   Prospector (astroenv Windows) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
 echo   idem (PowerShell + options) .... INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1
 echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
+echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements.txt)
 echo.
 echo Ouvrez le fichier texte LISTE_INSTALL_OPTIONNELS.txt pour le meme tableau.
 echo.
