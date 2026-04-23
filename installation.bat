@@ -104,6 +104,8 @@ echo %BLUE%=== ETAPE 1: Selection du dossier d'installation ===%RESET%
 echo.
 echo Indiquez un chemin absolu accessible en ecriture (ex. C:\Apps\NPOAP ou D:\Astro\NPOAP).
 echo Aucun dossier personnel n'est impose par defaut.
+echo Si les sources sont deja dans ce dossier ^(meme emplacement que installation.bat^), la copie sera
+echo automatiquement ignoree ^(sinon xcopy signale une « copie cyclique »^).
 echo.
 :ASK_INSTALL_DIR
 set "INSTALL_DIR_CUSTOM="
@@ -351,6 +353,14 @@ if not defined CONDA_INST_ROOT (
     exit /b 1
 )
 
+REM Conda recent : sans acceptation explicite des CGU des canaux Anaconda par defaut,
+REM "conda create" en script echoue avec CondaToSNonInteractiveError.
+echo Acceptation des CGU des canaux repo.anaconda.com ^(obligatoire pour conda create en mode script^)...
+call conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>nul
+call conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>nul
+call conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>nul
+echo.
+
 REM ===================================================================
 REM ETAPE 5: Création de l'environnement Conda
 REM ===================================================================
@@ -385,11 +395,19 @@ echo %GREEN%Environnement %ENV_NAME% cree avec succes!%RESET%
 echo.
 
 REM ===================================================================
-REM ETAPE 6: Copie du projet, normalisation requirements.txt, dependances pip
+REM ETAPE 6: Copie du projet, normalisation UTF-8, pip ^(cœur PyPI uniquement^)
 REM ===================================================================
 echo %BLUE%=== ETAPE 6: Copie NPOAP, requirements UTF-8, installation pip ===%RESET%
 echo.
+echo Dependances installees depuis requirements_install_core.txt ^(PyPI seul, pas de git / ezpadova / PHOEBE / optionnels lourds^).
+echo Pour tout requirements.txt ^(git+, etc.^): conda activate %ENV_NAME% ^& pip install -r requirements.txt
+echo.
 
+if not exist "requirements_install_core.txt" (
+    echo %RED%ERREUR: requirements_install_core.txt introuvable dans le dossier du script!%RESET%
+    pause
+    exit /b 1
+)
 if not exist "requirements.txt" (
     echo %RED%ERREUR: requirements.txt introuvable dans le dossier du script!%RESET%
     pause
@@ -414,26 +432,39 @@ if exist "!INSTALL_DIR!" (
     attrib -R "!INSTALL_DIR!\*.*" /S >nul 2>&1
 )
 
-echo Copie des fichiers vers !INSTALL_DIR!...
-xcopy /E /I /Y /Q . "!INSTALL_DIR!" /EXCLUDE:exclude_files.txt
-set "XCOPY_EC=!errorLevel!"
-REM xcopy : 0 ok ; 1 aucun fichier a copier ; 2 arret utilisateur ; 4 erreur init ^(chemins, memoire^)
-if !XCOPY_EC! geq 4 (
-    echo %YELLOW%ATTENTION: xcopy code !XCOPY_EC! - tentative robocopy...%RESET%
-    robocopy "%~dp0." "!INSTALL_DIR!" /E /COPY:DAT /R:2 /W:3 /XD __pycache__ .git .conda .cache /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS /NP
-    if errorlevel 8 (
-        echo %RED%ERREUR: copie vers !INSTALL_DIR! echouee ^(xcopy code !XCOPY_EC!, robocopy ^>=8^).%RESET%
+set "SKIP_PROJECT_COPY="
+set "SRC_CMP=%~dp0"
+if "!SRC_CMP:~-1!"=="\" set "SRC_CMP=!SRC_CMP:~0,-1!"
+set "DST_CMP=!INSTALL_DIR!"
+if "!DST_CMP:~-1!"=="\" set "DST_CMP=!DST_CMP:~0,-1!"
+if /i "!SRC_CMP!"=="!DST_CMP!" set "SKIP_PROJECT_COPY=1"
+
+if defined SKIP_PROJECT_COPY (
+    echo Dossier cible identique au dossier des sources - copie ignoree ^(evite « copie cyclique »^).
+) else (
+    echo Copie des fichiers vers !INSTALL_DIR!...
+    xcopy /E /I /Y /Q . "!INSTALL_DIR!" /EXCLUDE:exclude_files.txt
+    set "XCOPY_EC=!errorLevel!"
+    REM xcopy : 0 ok ; 1 aucun fichier a copier ; 2 arret utilisateur ; 4 erreur init ^(chemins, memoire^)
+    if !XCOPY_EC! geq 4 (
+        echo %YELLOW%ATTENTION: xcopy code !XCOPY_EC! - tentative robocopy...%RESET%
+        robocopy "%~dp0." "!INSTALL_DIR!" /E /COPY:DAT /R:2 /W:3 /XD __pycache__ .git .conda .cache /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS /NP
+        if errorlevel 8 (
+            echo %RED%ERREUR: copie vers !INSTALL_DIR! echouee ^(xcopy code !XCOPY_EC!, robocopy ^>=8^).%RESET%
+        )
+    ) else if !XCOPY_EC! equ 2 (
+        echo %YELLOW%ATTENTION: xcopy interrompu ^(code 2^).%RESET%
     )
-) else if !XCOPY_EC! equ 2 (
-    echo %YELLOW%ATTENTION: xcopy interrompu ^(code 2^).%RESET%
 )
 
 attrib -R "!INSTALL_DIR!\requirements.txt" >nul 2>&1
+attrib -R "!INSTALL_DIR!\requirements_install_core.txt" >nul 2>&1
 
-REM pip exige requirements.txt en UTF-8 ^(pas UTF-16 / Unicode Bloc-notes^)
+REM pip exige des fichiers requirements en UTF-8 ^(pas UTF-16 / Unicode Bloc-notes^)
 set "NORM_PS=%~dp0normalize_requirements_utf8.ps1"
 if exist "!NORM_PS!" (
-    echo Normalisation UTF-8 de requirements.txt pour pip...
+    echo Normalisation UTF-8 des fichiers requirements pour pip...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "!NORM_PS!" "!INSTALL_DIR!\requirements_install_core.txt"
     powershell -NoProfile -ExecutionPolicy Bypass -File "!NORM_PS!" "!INSTALL_DIR!\requirements.txt"
 ) else (
     echo %YELLOW%ATTENTION: normalize_requirements_utf8.ps1 absent - encodage requirements non corrige.%RESET%
@@ -448,17 +479,18 @@ if !errorLevel! neq 0 (
     exit /b 1
 )
 
-echo Mise a jour de pip...
-python -m pip install --upgrade pip
+echo Mise a jour de pip, setuptools, wheel...
+python -m pip install --upgrade pip setuptools wheel
 
-echo Installation des dependances depuis requirements.txt...
-python -m pip install -r "!INSTALL_DIR!\requirements.txt"
+echo Installation des dependances ^(cœur PyPI^) depuis requirements_install_core.txt...
+python -m pip install --prefer-binary -r "!INSTALL_DIR!\requirements_install_core.txt"
 
 if !errorLevel! neq 0 (
-    echo %YELLOW%ATTENTION: Certaines dependances n'ont pas pu etre installees%RESET%
-    echo Veuillez verifier les erreurs ci-dessus.
+    echo %YELLOW%ATTENTION: pip a signale une erreur. Verifiez les lignes ci-dessus ^(reseau, proxy, antivirus^).%RESET%
+    echo Pour reessayer : conda activate %ENV_NAME% ^& cd /d "!INSTALL_DIR!" ^& python -m pip install --prefer-binary -r requirements_install_core.txt
 ) else (
-    echo %GREEN%Dependances installees avec succes!%RESET%
+    echo %GREEN%Dependances cœur installees avec succes!%RESET%
+    echo %YELLOW%Optionnel : PHOEBE, ezpadova ^(git^), lightkurve, pip complet ^>^> pip install -r requirements.txt ^(Git requis^)%RESET%
 )
 echo.
 
@@ -510,7 +542,7 @@ if exist "protect_files.bat" (
     echo Mise en lecture seule des fichiers source...
     attrib +R "*.py" >nul 2>&1
     attrib +R "*.md" >nul 2>&1
-    REM requirements.txt non verrouille : reinstall / pip / normalisation UTF-8
+    REM requirements*.txt non verrouilles : reinstall / pip / normalisation UTF-8
     attrib +R "core\*.*" /S >nul 2>&1
     attrib +R "gui\*.*" /S >nul 2>&1
     attrib +R "utils\*.*" /S >nul 2>&1
@@ -518,6 +550,8 @@ if exist "protect_files.bat" (
     REM Ne pas protéger les fichiers nécessaires à l'exécution
     attrib -R "config.py" >nul 2>&1
     attrib -R "config.json" >nul 2>&1
+    attrib -R "requirements.txt" >nul 2>&1
+    attrib -R "requirements_install_core.txt" >nul 2>&1
     if exist "logs" attrib -R "logs\*.*" /S >nul 2>&1
     if exist "output" attrib -R "output\*.*" /S >nul 2>&1
     echo %GREEN%Fichiers proteges en lecture seule%RESET%
@@ -549,7 +583,7 @@ echo   KBMOD sous WSL/Linux ........... install_kbmod_wsl.bat
 echo   Prospector (astroenv Windows) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
 echo   idem (PowerShell + options) .... INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1
 echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
-echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements.txt)
+echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements_install_core.txt)
 echo.
 echo Ouvrez le fichier texte LISTE_INSTALL_OPTIONNELS.txt pour le meme tableau.
 echo.

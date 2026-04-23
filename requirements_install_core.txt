@@ -1,0 +1,33 @@
+# -*- coding: utf-8 -*-
+# NPOAP — Dépendances installées par installation.bat (PyPI uniquement, sans Git).
+#
+# Exclut volontairement : ezpadova (git+https), PHOEBE, pylightcurve, rebound, ultranest,
+# lightkurve, synphot, stdpipe, chaîne Prospector, sncosmo/iminuit, kbmod, CuPy.
+#
+# Installation complète (toutes les lignes de requirements.txt, dont git+) :
+#   conda activate astroenv
+#   pip install -r requirements.txt
+#   (Git installé ou : conda install -y git)
+
+numpy>=2.4.0,<2.5
+scipy>=1.17.1,<1.18
+pandas>=1.5.0
+astropy>=7.2.0,<7.3
+photutils[all]>=1.6.0
+ccdproc>=2.4.0
+astroquery>=0.4.6
+reproject>=0.8
+matplotlib>=3.10.0,<3.11
+requests>=2.33.0
+Pillow>=12.1.0
+pytz>=2024.1
+packaging>=21.0
+emcee>=3.1.0
+statsmodels>=0.13.0
+specutils>=1.12.0
+h5py>=3.0.0
+click>=8.0.0
+reportlab>=3.6.0
+wotan>=1.9
+exotethys>=1.0.0
+sora-astro>=0.3.2

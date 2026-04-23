@@ -1,30 +1,1187 @@
-# NPOAP Complet - Tous les modules
-numpy>=1.20.0
-scipy>=1.7.0
-pandas>=1.3.0
-astropy>=5.0.0
+# -*- coding: utf-8 -*-
+# NPOAP - Requirements
+# Nouvelle Plateforme d'Observation et d'Analyse Photometrique
+#
+# Encodage: UTF-8 uniquement.
+
+# === DEPENDANCES CORE (REQUISES) ===
+
+# Calcul scientifique
+numpy>=2.4.0,<2.5
+scipy>=1.17.1,<1.18
+pandas>=1.5.0
+
+# Astronomie
+astropy>=7.2.0,<7.3
 photutils[all]>=1.6.0
 ccdproc>=2.4.0
-reproject>=0.8
-matplotlib>=3.5.0
-requests>=2.25.0
-Pillow>=9.0.0
-pytz
 astroquery>=0.4.6
-pylightcurve>=1.0.0
+reproject>=0.8
+
+# Visualisation
+matplotlib>=3.10.0,<3.11
+
+# Services / utilitaires
+requests>=2.33.0
+Pillow>=12.1.0
+pytz>=2024.1
+
+# Domaines NPOAP
+sora-astro>=0.3.2
 emcee>=3.1.0
+phoebe>=2.4.22,<2.5
 reportlab>=3.6.0
+pylightcurve>=4.0.0
+wotan>=1.9
+exotethys>=1.0.0
+h5py>=3.0.0
+click>=8.0.0
 statsmodels>=0.13.0
 specutils>=1.12.0
-dynesty>=2.0.0
-dill>=0.3.0
-h5py>=3.0.0
-rebound>=3.20.0
-ultranest>=0.7.0
-phoebe>=2.4.0
-exotethys>=1.0.0
-click>=8.0.0
 stdpipe
 synphot
 lightkurve>=2.4.0
+
+# Cosmologie SNe Ia (Transitoires : SALT2/SALT3 via sncosmo)
+sncosmo>=2.10,<3
+iminuit>=2.0
+
+# PARSEC / amas (GitHub, pas sur PyPI)
 git+https://github.com/mfouesneau/ezpadova
+
+# Prospector : NE PAS installer depuis PyPI (mauvais paquet / sedpy incomplet)
+# Utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat/.ps1
+dynesty>=2.0.0
+dill>=0.3.0
+
+# Optionnels avanc�s
+rebound>=3.20.0
+ultranest>=0.7.0
+
+# KBMOD: laisser comment� sous Windows natif (installer via WSL)
+# kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+# CuPy / CUDA (d�commenter selon votre version CUDA)
+# cupy-cuda11x>=11.0.0
+# cupy-cuda12x>=12.0.0
+# -*- coding: utf-8 -*-
+# NPOAP - Requirements
+# Nouvelle Plateforme d'Observation et d'Analyse Photometrique
+#
+# Encodage: UTF-8 uniquement. Ne pas enregistrer en "Unicode" (UTF-16) sous le Bloc-notes Windows.
+
+# === DEPENDANCES CORE (REQUISES) ===
+#
+# Environnement valid� sous Windows avec :
+#   - Python 3.11.x
+#   - numpy 2.4.4
+#   - scipy 1.17.1
+#   - phoebe 2.4.22
+#
+
+# Calcul scientifique
+numpy>=2.4.0,<2.5
+scipy>=1.17.1,<1.18
+pandas>=1.5.0
+
+# Astronomie
+astropy>=7.2.0,<7.3
+photutils[all]>=1.6.0
+ccdproc>=2.4.0
+astroquery>=0.4.6
+# lightkurve>=2.4.0  # optionnel si l'API Portal astroquery bloquee
+reproject>=0.8
+
+# Visualisation
+matplotlib>=3.10.0,<3.11
+
+# SORA   occultations stellaires (pr�dictions Gaia, analyse ; Python 3.11+)
+sora-astro>=0.3.2
+
+# Requetes HTTP
+requests>=2.33.0
+
+# Traitement d'images
+Pillow>=12.1.0
+
+# Fuseaux (certains modules / tests)
+pytz>=2024.1
+
+# Modelisation TTV (Timing Variations)
+emcee>=3.1.0
+
+# Etoiles binaires (PHOEBE2)
+# Sous Windows : n�cessite MSVC Build Tools (voir README_INSTALLATION).
+phoebe>=2.4.22,<2.5
+
+# Generation de PDF
+reportlab>=3.6.0
+
+# Analyse de courbes de lumiere
+pylightcurve>=4.0.0
+# D�trendage LC (viewer affinage Tc / TTV)   Hippke et al. 2019, https://github.com/hippke/wotan
+wotan>=1.9
+
+# Limb darkening ExoTETHyS
+exotethys>=1.0.0
+h5py>=3.0.0
+click>=8.0.0
+
+# Analyse statistique
+statsmodels>=0.13.0
+
+# Analyse spectroscopique
+specutils>=1.12.0
+
+# Outils photometrie / SED (distribution complete)
+stdpipe
+synphot
+lightkurve>=2.4.0
+sncosmo>=2.10,<3
+iminuit>=2.0
+
+# PARSEC / amas (GitHub, pas sur PyPI)
+git+https://github.com/mfouesneau/ezpadova
+
+# Prospector : NE PAS installer depuis PyPI (mauvais paquet / sedpy incomplet)
+# Utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
+dynesty>=2.0.0
+dill>=0.3.0
+
+# Simulation N-body (optionnel)
+rebound>=3.20.0
+
+# Nested sampling (optionnel)
+ultranest>=0.7.0
+
+# === Cosmologie SNe (SN Ia, sncosmo) ===
+# Install� par d�faut via requirements.txt.
+# Filtres Gaia (G, G_Bp, G_Rp) �! bandes sncosmo gaia::g, gaia::gbp, gaia::grp (voir core/sncosmo_sn_ia.py).
+
+# === OPTIONNEL AVANCE ===
+
+# KBMOD : uniquement WSL/Linux - docs/INSTALL_KBMOD_WSL.md et requirements-kbmod.txt
+# kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+# CuPy / CUDA - decommenter selon votre version CUDA
+# cupy-cuda11x>=11.0.0
+# cupy-cuda12x>=12.0.0
+
+statsmodels>=0.13.0
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+
+
+
+
+
+# Analyse spectroscopique
+
+specutils>=1.12.0
+
+
+
+# Analyse de populations stellaires et SED (Prospector)
+
+# IMPORTANT: Prospector et sedpy doivent �tre install�s depuis GitHub, pas depuis PyPI
+
+# - Le package 'prospector' sur PyPI est un outil d'analyse de code Python (pas celui pour l'astronomie)
+
+# - Le package 'sedpy' sur PyPI n'a pas le module 'observate' requis par Prospector
+
+# Installation automatique: utiliser INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat ou .ps1
+
+# Installation manuelle:
+
+#   pip uninstall sedpy -y
+
+#   pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
+
+#   pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
+
+# prospector>=1.3.0  # Comment� - installer depuis GitHub au lieu de PyPI
+
+# sedpy>=1.0.0  # Comment� - installer depuis GitHub au lieu de PyPI (pour avoir observate)
+
+# D�pendances pour Prospector (install�es automatiquement)
+
+dynesty>=2.0.0
+
+dill>=0.3.0
+
+h5py>=3.0.0
+
+# astropy>=5.0.0 est d�j� list� ci-dessus (requis par Prospector)
+
+
+
+# Simulation N-body (optionnel, pour analyse syst�mes multiples)
+
+rebound>=3.20.0
+
+
+
+# Fitting N-body bay�sien (optionnel, pour caract�risation TTV)
+
+ultranest>=0.7.0
+
+
+
+# === DEPENDANCES OPTIONNELLES AVANC�ES ===
+
+
+
+# D�tection Synthetic Tracking (ast�ro�des, NEOs) - optionnel
+
+# Pr�requis: GPU NVIDIA, CUDA Toolkit >= 8.0, CMake >= 3.23
+
+# Si pip install �choue (sous-modules/build): git clone https://github.com/dirac-institute/kbmod.git --recursive && cd kbmod && pip install .
+
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
+
+
+
+# Support GPU (CuPy) - Optionnel, acc�l�ration GPU pour astrom�trie
+
+# N�cessite CUDA install�
+
+# cupy-cuda11x ou cupy-cuda12x (selon votre version CUDA)
+
+# D�commenter la ligne correspondant � votre version CUDA:
+
+# cupy-cuda11x>=11.0.0
+
+# cupy-cuda12x>=12.0.0
+
+
+
+

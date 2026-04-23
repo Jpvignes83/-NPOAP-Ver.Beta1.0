@@ -11,3 +11,6 @@ Executer les scripts depuis le dossier NPOAP (copie d'installation ou deploiemen
   INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat   Prospector dans astroenv Windows (lance le .ps1)
   INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1   Meme chose + options (-InstallFSPS, -CondaEnv, ...)
   Installation_fsps/prospector.bat           Prospector + FSPS via WSL (avec install_prospector_wsl.sh)
+  INSTALLER_SORA_ASTROENV.bat                Optionnel : reinstaller sora-astro seul dans astroenv (deja dans requirements.txt)
+  requirements-cosmology-sne.txt             Profil pip : SN Ia (sncosmo / SALT2-SALT3), onglet Photometrie Transitoires
+                                             pip install -r requirements-cosmology-sne.txt
