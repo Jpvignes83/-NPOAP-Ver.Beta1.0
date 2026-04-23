@@ -194,6 +194,37 @@ def _as_float_col_optional(tab: Table, n: int, *candidates: str) -> np.ndarray:
     return np.full(n, np.nan, dtype=float)
 
 
+def _as_str_col(tab: Table, *candidates: str) -> np.ndarray:
+    """Retourne une colonne texte (trim)."""
+    for name in candidates:
+        if name in tab.colnames:
+            col = tab[name]
+            return np.asarray([str(v).strip() if v is not None else "" for v in col], dtype=object)
+    raise KeyError(f"Aucune colonne parmi {candidates} dans {list(tab.colnames)[:20]}…")
+
+
+def _gaia_non_variable_mask(var_flag: np.ndarray) -> np.ndarray:
+    """
+    Masque des étoiles Gaia à conserver (non variables).
+
+    Les entrées vides/indisponibles sont conservées ; seules les valeurs explicitement
+    marquées variables sont rejetées.
+    """
+    vf = np.asarray(var_flag, dtype=object)
+    keep = np.ones(len(vf), dtype=bool)
+    for i, raw in enumerate(vf):
+        t = str(raw).strip().lower()
+        if t in ("", "none", "nan", "--", "not_available", "notavailable", "?"):
+            continue
+        if t in ("false", "0", "no", "n", "f", "non-variable", "non_variable", "constant"):
+            continue
+        if ("non" in t and "vari" in t) or ("not" in t and "vari" in t):
+            continue
+        if "vari" in t or t in ("true", "1", "yes", "y", "t", "v"):
+            keep[i] = False
+    return keep
+
+
 def johnson_rc_from_apass_gr_lupton2005(g: np.ndarray, r: np.ndarray) -> np.ndarray:
     """
     R magnitude Johnson **Cousins** à partir de magnitudes type SDSS **g**, **r**.
@@ -240,7 +271,7 @@ def query_gaia_dr3_field(center: SkyCoord, radius_deg: float, mag_limit: float =
         raise RuntimeError("astroquery est requis pour le catalogue Gaia.") from e
 
     v = Vizier(
-        columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag"],
+        columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag", "VarFlag"],
         row_limit=8000,
     )
     res = v.query_region(
@@ -267,8 +298,19 @@ def query_gaia_dr3_field(center: SkyCoord, radius_deg: float, mag_limit: float =
         rp = _as_float_col(tab, "RPmag", "RPMAG", "phot_rp_mean_mag")
     except KeyError:
         rp = np.full_like(gm, np.nan)
+    try:
+        var_flag = _as_str_col(tab, "VarFlag", "varFlag", "_VarFlag", "VARFLAG")
+    except KeyError:
+        logger.warning(
+            "Gaia DR3 : colonne VarFlag absente ; calcul poursuivi sans rejet des étoiles variables."
+        )
+        var_flag = np.full(len(tab), "", dtype=object)
+    non_variable = _gaia_non_variable_mask(var_flag)
 
-    ok = np.isfinite(gm) & (gm <= mag_limit)
+    ok = np.isfinite(gm) & (gm <= mag_limit) & non_variable
+    n_rejected_variable = int(np.count_nonzero(~non_variable))
+    if n_rejected_variable > 0:
+        logger.info("Gaia DR3 : %d étoile(s) marquée(s) variable(s) exclue(s).", n_rejected_variable)
     out = Table()
     out["RA_ICRS"] = ra[ok]
     out["DE_ICRS"] = dec[ok]
