@@ -95,6 +95,7 @@ from core.transformation_coefficients import (
     ref_band_id_for_observer_filter,
     ref_band_label_for_id,
 )
+from gui.manual_help import add_manual_help_header
 from core.alcdef_export import (
     LIGHT_CURVE_MAGNITUDE_HEADER,
     ReportMeta,
@@ -574,6 +575,7 @@ class AsteroidPhotometryTab:
         self.setup_gui()
 
     def setup_gui(self):
+        add_manual_help_header(self.frame, "5-photométrie-astéroïdes")
         ttk.Label(self.frame, text="Photométrie d'astéroïdes", font=("Helvetica", 12, "bold")).pack(pady=5)
         notebook = ttk.Notebook(self.frame)
         notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))

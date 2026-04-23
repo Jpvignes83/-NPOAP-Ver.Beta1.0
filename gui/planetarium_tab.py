@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 import config
 
+from gui.manual_help import add_manual_help_header_grid
+
 # Séquence type « exemple officiel » C2A (aide TCP). Champ 1°×1°. Date/heure : chaîne locale
 # calculée depuis le fuseau de l’observatoire dans config.json (onglet Accueil), pas l’horloge Windows seule.
 # https://c2a.astrosurf.com/english/support/help/Html/Comment_communiquer_avec_C2A_au_travers_d_un_socket_TCP.htm
@@ -188,12 +190,13 @@ class PlanetariumTab(ttk.Frame):
     # Construction de l'interface
     # ------------------------------------------------------------------
     def _build_ui(self):
+        add_manual_help_header_grid(self, "planétarium-c2a", columnspan=3)
         title = ttk.Label(
             self,
             text="Planétarium – Intégration C2A",
             font=("Helvetica", 14, "bold"),
         )
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        title.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
         desc = ttk.Label(
             self,
@@ -205,18 +208,18 @@ class PlanetariumTab(ttk.Frame):
             justify="left",
             wraplength=900,
         )
-        desc.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 15))
+        desc.grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 15))
 
         # Ligne sélection du chemin vers C2A
         ttk.Label(self, text="Chemin de l'exécutable C2A :").grid(
-            row=2, column=0, sticky="w"
+            row=3, column=0, sticky="w"
         )
 
         entry = ttk.Entry(self, textvariable=self.c2a_path_var, width=90)
-        entry.grid(row=2, column=1, sticky="we", padx=(5, 5))
+        entry.grid(row=3, column=1, sticky="we", padx=(5, 5))
 
         browse_btn = ttk.Button(self, text="Parcourir…", command=self._browse_c2a)
-        browse_btn.grid(row=2, column=2, sticky="w")
+        browse_btn.grid(row=3, column=2, sticky="w")
 
         ttk.Label(
             self,
@@ -228,11 +231,11 @@ class PlanetariumTab(ttk.Frame):
             font=("TkDefaultFont", 8),
             wraplength=880,
             justify="left",
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         # Ligne boutons Installer / Lancer / Quitter
         btn_row = ttk.Frame(self)
-        btn_row.grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        btn_row.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
         ttk.Button(
             btn_row,
@@ -254,7 +257,7 @@ class PlanetariumTab(ttk.Frame):
 
         # Informations observatoire (config.json + repli config.py)
         obs_frame = ttk.LabelFrame(self, text="Localisation de l'observatoire (config.json)", padding=6)
-        obs_frame.grid(row=5, column=0, columnspan=3, sticky="we", pady=(15, 0))
+        obs_frame.grid(row=6, column=0, columnspan=3, sticky="we", pady=(15, 0))
 
         self._observatory_info_label = ttk.Label(
             obs_frame,
@@ -267,12 +270,12 @@ class PlanetariumTab(ttk.Frame):
 
         # Cadre liste des cibles reçues depuis l’onglet Nuit
         targets_frame = ttk.LabelFrame(self, text="Cibles envoyées depuis « Observation de la Nuit »", padding=6)
-        targets_frame.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=(15, 0))
+        targets_frame.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(15, 0))
 
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=0)
-        self.rowconfigure(6, weight=1)
+        self.rowconfigure(7, weight=1)
 
         cols = ("Nom", "Type", "RA", "Dec", "Mag vis")
         self.targets_tree = ttk.Treeview(
@@ -303,7 +306,7 @@ class PlanetariumTab(ttk.Frame):
 
         # Contrôle TCP/IP C2A (protocole officiel : port 5876, commandes terminées par « ; »)
         tcp_frame = ttk.LabelFrame(self, text="Contrôle TCP/IP C2A (socket, port 5876)", padding=6)
-        tcp_frame.grid(row=7, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        tcp_frame.grid(row=8, column=0, columnspan=3, sticky="we", pady=(8, 0))
 
         self.tcp_enabled_var = tk.BooleanVar(value=False)
         self.tcp_host_var = tk.StringVar(value="127.0.0.1")
@@ -382,7 +385,7 @@ class PlanetariumTab(ttk.Frame):
             wraplength=900,
             justify="left",
         )
-        help_lbl.grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        help_lbl.grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # ------------------------------------------------------------------
     # Utilitaires

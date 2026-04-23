@@ -101,9 +101,12 @@ class DataAnalysisTab:
         Conteneur d'analyse (période, TTV, etc.) : parent = notebook principal
         ou tout frame (ex. panneau droit Photométrie Exoplanètes).
         """
+        from gui.manual_help import add_manual_help_header
+
         self.main_frame = ttk.Frame(parent_notebook)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
-        
+        add_manual_help_header(self.main_frame, "7-analyse-de-données")
+
         # Sous-onglets A–E (MAST / catalogues exoplanètes puis outils d'analyse)
         self.sub_notebook = ttk.Notebook(self.main_frame)
         self.sub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)

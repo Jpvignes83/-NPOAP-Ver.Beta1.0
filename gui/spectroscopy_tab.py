@@ -8,6 +8,8 @@ import logging
 import numpy as np
 from pathlib import Path
 
+from gui.manual_help import add_manual_help_header
+
 logger = logging.getLogger(__name__)
 
 # Import specutils
@@ -122,7 +124,8 @@ class SpectroscopyTab(ttk.Frame):
     
     def create_widgets(self):
         """Crée l'interface utilisateur"""
-        
+        add_manual_help_header(self, "11-spectroscopie")
+
         # En-tête
         header_frame = ttk.Frame(self)
         header_frame.pack(fill="x", pady=(0, 10))

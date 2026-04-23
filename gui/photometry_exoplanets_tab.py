@@ -64,6 +64,7 @@ def _read_csv_robust(file_path):
 # --- Imports du pipeline ---
 from core.photometry_pipeline import PhotometryPipeline
 from gui.target_selector import launch_target_selection
+from gui.manual_help import add_manual_help_header
 import config
 
 # --- NOUVEAU : On utilise UNIQUEMENT le visualiseur complet ---
@@ -90,6 +91,7 @@ class PhotometryExoplanetsTab(ttk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
+        add_manual_help_header(self, "4-photométrie-exoplanètes")
         main_paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         main_paned.pack(fill=tk.BOTH, expand=True)
 

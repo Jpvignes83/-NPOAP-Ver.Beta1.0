@@ -43,6 +43,8 @@ except ImportError:
     ASTRO_COLIBRI_AVAILABLE = False
     AstroColibriClient = None
 
+from gui.manual_help import add_manual_help_header
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,6 +88,7 @@ class TransientPhotometryTab(ttk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
+        add_manual_help_header(self, "6-photométrie-transitoires")
         # Layout principal (uniquement la partie STDPipe à gauche)
         container = ttk.Frame(self, padding=5)
         container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)

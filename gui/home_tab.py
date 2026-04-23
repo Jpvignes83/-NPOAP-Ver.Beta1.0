@@ -7,6 +7,7 @@ import importlib
 
 import config
 from core.api_key_dialog import APIKeyDialog, API_KEY_PATH
+from gui.manual_help import add_manual_help_header
 from config import OBSERVATORY, EQUIPMENT_OBSERVATION
 
 
@@ -176,17 +177,18 @@ class HomeTab(ttk.Frame):
     # GUI
     # ------------------------------------------------------------------
     def create_widgets(self):
+        add_manual_help_header(self, "2-accueil")
         # Frame principal avec deux colonnes
         left_frame = ttk.Frame(self)
-        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         
         right_frame = ttk.Frame(self)
-        right_frame.grid(row=0, column=1, sticky="nsew")
+        right_frame.grid(row=1, column=1, sticky="nsew")
         
         # Configuration des colonnes pour l'expansion
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
         
         # ========== COLONNE GAUCHE ==========
         # Observatoire

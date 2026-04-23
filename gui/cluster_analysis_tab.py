@@ -87,6 +87,9 @@ class ClusterAnalysisTab(ttk.Frame):
         self._distance_modulus = None
         self._age_gyr = None
         self._age_model = None  # "PARSEC" ou "grille empirique"
+        from gui.manual_help import add_manual_help_header
+
+        add_manual_help_header(self, "analyse-amas-open-clusters")
         self._build_ui()
 
     def _build_ui(self):

@@ -916,7 +916,10 @@ class NightObservationTab(ttk.Frame):
     
     def create_widgets(self):
         """Crée les widgets de l'interface."""
-        
+        from gui.manual_help import add_manual_help_header
+
+        add_manual_help_header(self, "12-observation-de-la-nuit")
+
         # Zone principale : gauche = catalogues + paramètres + liste ;
         # droite = graphique (right_col) sur toute la hauteur. L'espace horizontal restant après
         # left_col est partagé 90 % / 10 % : right_col plus étroit de 10 %, marge vide à l'extrême droite.

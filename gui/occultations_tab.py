@@ -131,6 +131,9 @@ class OccultationsTab(ttk.Frame):
 
     def __init__(self, parent, night_observation_tab=None):
         super().__init__(parent, padding=8)
+        from gui.manual_help import add_manual_help_header
+
+        add_manual_help_header(self, "13-occultations-sora-pymovie-analyse")
         self._project_root = Path(__file__).resolve().parent.parent
         self._night_observation_tab = night_observation_tab
         self._pred_occ_labels = []

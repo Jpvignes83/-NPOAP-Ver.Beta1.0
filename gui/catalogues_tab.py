@@ -22,6 +22,8 @@ from astropy.io import fits
 from astropy.table import Table, vstack
 import numpy as np
 
+from gui.manual_help import add_manual_help_header
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -93,7 +95,8 @@ class CataloguesTab(ttk.Frame):
     
     def create_widgets(self):
         """Crée l'interface utilisateur avec Notebook interne organisé par type d'objet."""
-        
+        add_manual_help_header(self, "onglet-catalogues")
+
         # En-tête
         header_frame = ttk.Frame(self)
         header_frame.pack(fill="x", pady=(0, 10))

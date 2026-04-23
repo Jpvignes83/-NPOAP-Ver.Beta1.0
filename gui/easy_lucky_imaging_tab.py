@@ -23,6 +23,8 @@ import astropy.units as u
 from scipy.optimize import minimize
 from scipy.ndimage import center_of_mass, maximum_filter, gaussian_filter
 
+from gui.manual_help import add_manual_help_header
+
 logger = logging.getLogger(__name__)
 
 # Import du module de réduction d'images (techniques REDUC)
@@ -249,7 +251,8 @@ class EasyLuckyImagingTab(ttk.Frame):
     
     def create_widgets(self):
         """Crée l'interface utilisateur"""
-        
+        add_manual_help_header(self, "9-easy-lucky-imaging")
+
         # En-tête
         header_frame = ttk.Frame(self, padding=10)
         header_frame.pack(fill="x")

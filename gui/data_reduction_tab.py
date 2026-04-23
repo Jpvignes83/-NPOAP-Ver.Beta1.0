@@ -25,6 +25,7 @@ from core.transformation_coefficients import (
     transformation_storage_dir,
 )
 from gui.asteroid_photometry_tab import estimate_fwhm_marginal
+from gui.manual_help import add_manual_help_header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -73,6 +74,7 @@ class CCDProcGUI:
     # GUI
     # ------------------------------------------------------------------
     def create_widgets(self):
+        add_manual_help_header(self.frame, "3-réduction-de-données")
         # --- Panneau Gauche (Contrôles) ---
         left_frame = ttk.Frame(self.frame)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)

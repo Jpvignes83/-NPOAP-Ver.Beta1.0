@@ -9,6 +9,8 @@ import numpy as np
 from pathlib import Path
 import threading
 
+from gui.manual_help import add_manual_help_header
+
 logger = logging.getLogger(__name__)
 
 # Import de la fenêtre de visualisation
@@ -88,7 +90,8 @@ class BinaryStarsTab(ttk.Frame):
     
     def create_widgets(self):
         """Crée l'interface utilisateur"""
-        
+        add_manual_help_header(self, "8-étoiles-binaires")
+
         # En-tête
         header_frame = ttk.Frame(self)
         header_frame.pack(fill="x", pady=(0, 10))
@@ -119,16 +122,16 @@ class BinaryStarsTab(ttk.Frame):
     def create_controls_section(self, parent):
         """Crée la section de contrôles à gauche"""
         
-        # 1. Vérification/Installation PHOEBE2
-        install_frame = ttk.LabelFrame(parent, text="1. Installation PHOEBE2", padding=10)
-        install_frame.pack(fill="x", pady=5)
+        # 1. Statut PHOEBE2 (ligne compacte)
+        status_frame = ttk.Frame(parent)
+        status_frame.pack(fill="x", pady=(0, 2))
         
         self.phoebe_status_label = ttk.Label(
-            install_frame,
+            status_frame,
             text="État: Vérification...",
             foreground="blue"
         )
-        self.phoebe_status_label.pack(pady=5)
+        self.phoebe_status_label.pack(anchor="w", padx=2, pady=1)
         
         if PHOEBE_AVAILABLE:
             try:
@@ -148,39 +151,32 @@ class BinaryStarsTab(ttk.Frame):
                 foreground="red"
             )
         
-        ttk.Button(
-            install_frame,
-            text="Installer PHOEBE2",
-            command=self.install_phoebe,
-            state="disabled" if PHOEBE_AVAILABLE else "normal"
-        ).pack(pady=5)
-        
-        # 2. Charger des données observées (pipeline: on a les données avant de configurer le modèle)
-        data_frame = ttk.LabelFrame(parent, text="2. Charger des données", padding=10)
-        data_frame.pack(fill="x", pady=5)
+        # 2. Charger des données observées
+        data_frame = ttk.LabelFrame(parent, text="2. Charger des données", padding=6)
+        data_frame.pack(fill="x", pady=3)
         
         self.data_file_var = tk.StringVar()
         
         file_frame = ttk.Frame(data_frame)
-        file_frame.pack(fill="x", pady=2)
+        file_frame.pack(fill="x", pady=1)
         ttk.Label(file_frame, text="Fichier (CSV):").pack(side="left", padx=(0, 5))
         ttk.Entry(file_frame, textvariable=self.data_file_var, width=30).pack(side="left", fill="x", expand=True)
         ttk.Button(file_frame, text="Parcourir", command=self.browse_data_file).pack(side="left", padx=(5, 0))
         
-        ttk.Label(data_frame, text="Format: time(s), flux(es), error/ferrs (optionnel). Temps en BJD-TDB ou JD.", font=("Helvetica", 8), foreground="gray").pack(anchor="w", pady=2)
+        ttk.Label(data_frame, text="Format: time(s), flux(es), error/ferrs (optionnel). Temps en BJD-TDB ou JD.", font=("Helvetica", 8), foreground="gray").pack(anchor="w", pady=1)
         
         ttk.Button(
             data_frame,
             text="Charger les données",
             command=self.load_observed_data
-        ).pack(pady=5)
+        ).pack(pady=2)
         
-        # 3. Périodogramme (estimer la période à partir des données chargées)
-        perio_frame = ttk.LabelFrame(parent, text="3. Périodogramme", padding=10)
-        perio_frame.pack(fill="x", pady=5)
+        # 4. Périodogramme (estimer la période à partir des données chargées)
+        perio_frame = ttk.LabelFrame(parent, text="4. Périodogramme", padding=6)
+        perio_frame.pack(fill="x", pady=3)
         ttk.Label(perio_frame, text="Utilise les données chargées ci-dessus. Min/Max période (jours):", font=("Helvetica", 8), foreground="gray").pack(anchor="w", pady=(0, 2))
         perio_params = ttk.Frame(perio_frame)
-        perio_params.pack(fill="x", pady=2)
+        perio_params.pack(fill="x", pady=1)
         ttk.Label(perio_params, text="Min P (j):").pack(side="left", padx=(0, 2))
         self.perio_min_p_var = tk.StringVar(value="0.5")
         ttk.Entry(perio_params, textvariable=self.perio_min_p_var, width=6).pack(side="left", padx=(0, 8))
@@ -188,14 +184,14 @@ class BinaryStarsTab(ttk.Frame):
         self.perio_max_p_var = tk.StringVar(value="10.0")
         ttk.Entry(perio_params, textvariable=self.perio_max_p_var, width=6).pack(side="left", padx=(0, 8))
         perio_btns = ttk.Frame(perio_frame)
-        perio_btns.pack(fill="x", pady=5)
+        perio_btns.pack(fill="x", pady=2)
         ttk.Button(perio_btns, text="Lomb-Scargle", command=lambda: self._run_periodogram("LS")).pack(side="left", padx=2)
         ttk.Button(perio_btns, text="BLS (Transit)", command=lambda: self._run_periodogram("BLS")).pack(side="left", padx=2)
         ttk.Button(perio_btns, text="Plavchan", command=lambda: self._run_periodogram("PLAV")).pack(side="left", padx=2)
         
-        # 4. Créer un nouveau système (bundle PHOEBE pour modéliser les données chargées)
-        bundle_frame = ttk.LabelFrame(parent, text="4. Créer un nouveau système", padding=10)
-        bundle_frame.pack(fill="x", pady=5)
+        # 5. Créer un nouveau système (bundle PHOEBE pour modéliser les données chargées)
+        bundle_frame = ttk.LabelFrame(parent, text="5. Créer un nouveau système", padding=6)
+        bundle_frame.pack(fill="x", pady=3)
         
         ttk.Label(bundle_frame, text="Type de système:").pack(anchor="w", pady=2)
         
@@ -236,39 +232,39 @@ class BinaryStarsTab(ttk.Frame):
         
         for label, var in param_grid:
             frame = ttk.Frame(params_frame)
-            frame.pack(fill="x", pady=2)
+            frame.pack(fill="x", pady=1)
             ttk.Label(frame, text=label, width=15).pack(side="left")
-            ttk.Entry(frame, textvariable=var, width=15).pack(side="left", padx=5)
+            ttk.Entry(frame, textvariable=var, width=12).pack(side="left", padx=3)
         
         # 6. Calcul et visualisation
-        compute_frame = ttk.LabelFrame(parent, text="6. Calcul", padding=10)
-        compute_frame.pack(fill="x", pady=5)
+        compute_frame = ttk.LabelFrame(parent, text="6. Calcul", padding=6)
+        compute_frame.pack(fill="x", pady=3)
         
         ttk.Button(
             compute_frame,
             text="Calculer le modèle",
             command=self.compute_model
-        ).pack(pady=5)
+        ).pack(pady=2)
         
         ttk.Button(
             compute_frame,
             text="Ajuster les paramètres",
             command=self.fit_parameters
-        ).pack(pady=5)
+        ).pack(pady=2)
         
         ttk.Button(
             compute_frame,
             text="🎬 Visualisation 3D",
             command=self.open_viewer
-        ).pack(pady=5)
+        ).pack(pady=2)
         
         # Barre de progression
         self.progress = ttk.Progressbar(compute_frame, mode="indeterminate")
-        self.progress.pack(fill="x", pady=5)
+        self.progress.pack(fill="x", pady=2)
         
         # 7. Sauvegarder/Charger
-        save_frame = ttk.LabelFrame(parent, text="7. Sauvegarder/Charger", padding=10)
-        save_frame.pack(fill="x", pady=5)
+        save_frame = ttk.LabelFrame(parent, text="7. Sauvegarder/Charger", padding=6)
+        save_frame.pack(fill="x", pady=3)
         
         ttk.Button(
             save_frame,
