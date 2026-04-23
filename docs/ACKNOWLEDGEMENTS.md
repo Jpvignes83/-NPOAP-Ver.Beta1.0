@@ -37,6 +37,16 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
 - **Matplotlib** : Bibliothèque de visualisation (https://matplotlib.org/)
   - Utilisée pour l'affichage graphique des images, courbes de lumière, et périodogrammes
 
+- **Cartopy** : cartographie et projections pour Python (https://scitools.org.uk/cartopy/)
+  - Utilisée par la bibliothèque **SORA** pour tracer les cartes d’occultation (`plot_occ_map`) lorsque vous utilisez l’onglet **🌑 Occultation** de NPOAP
+
+### Occultations stellaires (prédictions et cartes)
+- **SORA (paquet PyPI `sora-astro`)** : *Stellar Occultation Reduction and Analysis* — prédiction d’occultations, cartes, analyse de courbes et géométrie des événements (https://github.com/riogroup/SORA ; documentation : https://sora.readthedocs.io/)
+  - Développée et maintenue par le **Rio Group** et collaborateurs ; NPOAP l’emploie dans l’onglet **🌑 Occultation** (prédictions, carte centrée sur le site d’observation, métadonnées d’erreur pour les bandes d’incertitude lorsque disponibles)
+
+- **Occultation Manager / occultation-tools** (Michael Camilleri) : dépôt d’outils pour l’observation automatisée d’occultations et la validation temporelle ; inclut des modèles de séquences **SharpCap** (dont *Just Record* et templates UTC avec compte à rebours) (https://github.com/labstercam/occultation-tools ; licence BSD-3-Clause)
+  - L’export **SharpCap (.scs)** depuis NPOAP cite ce dépôt dans les en-têtes du fichier et reprend la structure générale du modèle *Just Record* (attente locale, enregistrement sur une durée en secondes) ; pour des séquences complètes (GOTO, UTC, etc.), les templates du dépôt restent la référence
+
 ### Étoiles binaires
 - **PHOEBE2** : Bibliothèque Python pour la modélisation d'étoiles binaires à éclipses (https://phoebe-project.org/)
   - Utilisée pour la modélisation et l'analyse des systèmes binaires dans l'onglet "Étoiles Binaires"
@@ -97,6 +107,11 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
   - Fournit des méthodes avancées de détection (segmentation, DAOStarFinder, IRAFStarFinder)
   - Permet le téléchargement d'images de référence depuis Pan-STARRS, SDSS, DES
   - Licence MIT
+
+- **sncosmo** : SuperNova Cosmology package (https://sncosmo.readthedocs.io/)
+  - Utilisé dans l’onglet **Photométrie Transitoires** (boîte SN Ia) pour l’ajustement **SALT2/SALT3** des courbes de lumière
+  - Utilisé avec les passbands Gaia (`gaia::g`, `gaia::gbp`, `gaia::grp`) et indicateurs de qualité de fit
+  - Développé et maintenu par la communauté astronomique open-source (BSD)
 
 ### Autres bibliothèques
 - **Pillow (PIL)** : Bibliothèque de traitement d'images (https://python-pillow.org/)
@@ -174,6 +189,10 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
 ### Services de catalogues
 - **Vizier** : Service de catalogues astronomiques du Centre de données astronomiques de Strasbourg (CDS)
   - Utilisé pour interroger les catalogues Gaia et autres catalogues astronomiques (https://vizier.cds.unistra.fr/)
+
+- **IRSA Dust Tools (IPAC/Caltech)** : service de poussière Galactique (SFD)  
+  - Utilisé via `astroquery.irsa_dust` pour récupérer `E(B-V)` sur la ligne de visée (RA/Dec) dans la boîte SN Ia de l’onglet transitoires  
+  - URL : https://irsa.ipac.caltech.edu/applications/DUST/
 
 - **TESS EBS (Eclipsing Binary Stars)** : Catalogue des étoiles binaires à éclipses observées par TESS (https://tessebs.villanova.edu/)
   - Utilisé dans l'onglet "Catalogues" pour l'extraction de données d'étoiles binaires
@@ -290,12 +309,15 @@ Pour plus d'informations sur les licences spécifiques, consultez :
 ## Remerciements spéciaux
 
 Nous remercions particulièrement :
+- Le **Rio Group** et les contributeurs de **SORA** (`sora-astro`) pour les capacités de prédiction et de cartographie d’occultations
+- **Michael Camilleri** pour le dépôt **occultation-tools** (documentation et modèles autour de SharpCap et du timing)
 - **Ben Sharkey** pour le projet Zero-Aperture-Astrometry et la méthodologie d’extrapolation zero-aperture
 - Les équipes du **NASA Exoplanet Archive** / **IPAC** et du **Minor Planet Center** pour l’accès aux catalogues et services d’éphémérides
 - Le projet **ExoClock** (groupe de travail éphémérides ARIEL) et les contributeurs du module **exoclock**
 - La **Section étoiles variables et exoplanètes** de la **Société astronomique tchèque** pour **VarAstro** et la base **ETD**
 - La communauté **Astropy** pour leurs outils fondamentaux
 - L'équipe **STDPipe** (Sergey Karpov) pour leur pipeline de détection de transitoires
+- Les développeurs de **sncosmo** pour l’écosystème d’ajustement des supernovae Ia (SALT2/SALT3)
 - L'équipe **PHOEBE** pour leur bibliothèque de modélisation d'étoiles binaires
 - L'équipe **BD-J** (Benjamin Johnson et collaborateurs) pour Prospector et sedpy, outils essentiels pour l'analyse spectroscopique avancée
 - L'équipe **FSPS** (Charlie Conroy et collaborateurs) pour leur code de synthèse de populations stellaires

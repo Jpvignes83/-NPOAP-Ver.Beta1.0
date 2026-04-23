@@ -151,6 +151,7 @@ Si vous préférez utiliser Python sans Conda :
    - **exotethys**, **h5py**, **click** : limb darkening / modules associés (ex. workflow ExoTETHyS)
    - **specutils**, **lightkurve** : spectroscopie et séries temporelles (selon les onglets utilisés)
    - **stdpipe**, **synphot** : pipelines photométriques / SED
+   - **sncosmo**, **iminuit** : ajustement SN Ia (SALT2/SALT3) dans l’onglet **Photométrie Transitoires**
    - **ezpadova** (dépôt Git, ligne `git+https://github.com/mfouesneau/ezpadova` dans le fichier) : isochrones PARSEC pour l’analyse d’amas
    - Les bibliothèques pour l'extraction de catalogues (requests pour MPC, TESS EBS, Exoplanet.eu)
    - Les outils d'analyse (emcee, statsmodels, pylightcurve, **wotan** : détrendage optionnel des segments de transit dans le viewer d’affinage Tc / TTV)
@@ -865,6 +866,12 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
   - Fournit des méthodes avancées de détection (segmentation, DAOStarFinder, IRAFStarFinder)
   - Permet le téléchargement d'images de référence depuis Pan-STARRS, SDSS, DES
   - Licence MIT
+
+- **sncosmo** (Cosmologie SNe) : https://sncosmo.readthedocs.io/
+  - Inclus dans l’installation standard via `requirements.txt`
+  - Utilisé pour l’ajustement **SALT2 / SALT3** de courbes de lumière **SN Ia** depuis l’onglet **Photométrie Transitoires** (boîte de dialogue dédiée)
+  - Les filtres **Gaia G, G_Bp, G_Rp** sont mappés vers les bandes intégrées `gaia::g`, `gaia::gbp`, `gaia::grp` (passbands eDR3 dans sncosmo)
+  - La boîte de fit inclut une correction optionnelle du rougissement MW via **IRSA Dust** (récupération de `E(B-V)` depuis RA/Dec)
 
 ### Services et catalogues externes
 
