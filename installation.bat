@@ -25,7 +25,6 @@ set "RESET="
 
 REM Configuration
 set VERSION=1.0
-set PYTHON_VERSION=3.11.9
 set MINICONDA_VERSION=latest
 set ENV_NAME=astroenv
 REM INSTALL_DIR : aucun chemin par defaut (chaque utilisateur choisit un dossier absolu)
@@ -160,61 +159,16 @@ if exist "%WRTEST%" (
 echo.
 
 REM ===================================================================
-REM ETAPE 3: Installation de Python 3.11
+REM ETAPE 3: Python (Miniconda + astroenv uniquement — pas d'installateur python.org)
 REM ===================================================================
-echo %BLUE%=== ETAPE 3: Installation de Python 3.11 ===%RESET%
+echo %BLUE%=== ETAPE 3: Python pour NPOAP ^(via Miniconda^) ===%RESET%
 echo.
-
-python --version >nul 2>&1
-if %errorLevel% equ 0 (
-    for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PYTHON_VER=%%i
-    echo Python est deja installe: !PYTHON_VER!
-    echo.
-    set /p REINSTALL_PYTHON="Voulez-vous reinstaller Python 3.11? (O/N): "
-    if /i "!REINSTALL_PYTHON!" neq "O" (
-        set SKIP_PYTHON=1
-    )
-)
-
-if not defined SKIP_PYTHON (
-    echo Telechargement de Python 3.11.9...
-    set PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON_VERSION%-amd64.exe
-    set PYTHON_INSTALLER=%TEMP%\python-%PYTHON_VERSION%-amd64.exe
-    
-    powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '!PYTHON_URL!' -OutFile '!PYTHON_INSTALLER!'}"
-    
-    if exist "!PYTHON_INSTALLER!" (
-        echo Installation de Python 3.11.9 en cours...
-        echo %YELLOW%Ne fermez pas cette fenetre : installation silencieuse...%RESET%
-        REM Ne pas utiliser start /wait "chemin.exe" : le 1er guillemet est le TITRE, pas l'exe.
-        "!PYTHON_INSTALLER!" /quiet InstallAllUsers=1 PrependPath=1
-        if errorlevel 1 (
-            del "!PYTHON_INSTALLER!" >nul 2>&1
-            echo %RED%ERREUR: echec de l'installateur Python.%RESET%
-            pause
-            exit /b 1
-        )
-        del "!PYTHON_INSTALLER!" >nul 2>&1
-        
-        REM Attendre un peu et recharger PATH depuis le registre
-        timeout /t 3 /nobreak >nul
-        for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "PATH=%%B"
-        
-        python --version >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo %GREEN%Python installe avec succes!%RESET%
-        ) else (
-            echo %YELLOW%ATTENTION: Python n'est pas encore dans le PATH%RESET%
-            echo Fermez et rouvrez ce terminal, puis relancez le script.
-            echo Ou continuez - Python sera disponible apres redemarrage du terminal.
-            set PYTHON_WARNING=1
-        )
-    ) else (
-        echo %RED%ERREUR: Echec du telechargement de Python%RESET%
-        pause
-        exit /b 1
-    )
-)
+echo NPOAP s'execute dans l'environnement Conda "%ENV_NAME%" avec Python 3.11 ^(conda create^).
+echo Un installateur separe depuis python.org n'est plus necessaire : Miniconda fournit deja
+echo un interpreteur ^(base^) puis l'etape suivante cree %ENV_NAME% avec python=3.11.
+echo.
+echo Si vous souhaitez en plus un Python "systeme" hors Conda, installez-le manuellement depuis
+echo https://www.python.org/ ^(optionnel, non requis pour ce script^).
 echo.
 
 REM ===================================================================

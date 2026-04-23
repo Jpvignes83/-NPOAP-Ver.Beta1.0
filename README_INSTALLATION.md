@@ -16,7 +16,7 @@ Ce guide décrit comment installer NPOAP automatiquement sur Windows 10/11.
 2. **Extrayez l'archive** dans un dossier de votre choix
 3. **Clic droit sur `installation.bat`** → **"Exécuter en tant qu'administrateur"**
 4. **Acceptez** l'accord d'utilisation, puis **indiquez un chemin d'installation absolu** (ex. `C:\Astro\NPOAP`). Aucun dossier par défaut n'est imposé.
-5. **Suivez les étapes** affichées (Python, Miniconda, environnement `astroenv`, dépendances `requirements.txt`, copie des fichiers, etc.)
+5. **Suivez les étapes** affichées (Miniconda, environnement `astroenv` avec Python 3.11, dépendances `requirements.txt`, copie des fichiers, etc.)
 6. À la fin, la console liste les **scripts optionnels** ; le fichier **`LISTE_INSTALL_OPTIONNELS.txt`** (dans le même dossier que NPOAP) reprend la même liste.
 
 ## Ce que fait le script `installation.bat`
@@ -28,10 +28,10 @@ Le script automatise le **cœur** de l'installation sur Windows. Les outils lour
 1. **Accord d'utilisation** puis vérification des privilèges administrateur
 2. **Sélection du dossier d'installation** (chemin absolu au choix de l'utilisateur)
 3. **Vérifications système** : architecture (x64 recommandé) et **droits d'écriture** dans le dossier choisi
-4. **Installation de Python 3.11** (facultatif si vous conservez une installation existante)
+4. **Rappel** : l'interpréteur utilisé par NPOAP est celui de l'environnement Conda **`astroenv`** (Python 3.11) ; **aucun** installateur séparé depuis python.org n'est lancé par le script.
 5. **Installation de Miniconda** (ou réutilisation de Conda déjà présent)
-6. **Création ou réutilisation** de l'environnement Conda **`astroenv`**
-7. **Installation des dépendances Python** depuis `requirements.txt` (via `pip`)
+6. **Création ou réutilisation** de l'environnement Conda **`astroenv`** avec `python=3.11`
+7. **Installation des dépendances Python** depuis `requirements.txt` (via `pip` dans `astroenv`), incluant notamment **wotan** pour le détrendage optionnel des segments de transit lors de l’affinage des mid-times (Analyse de données) ; voir `docs/MANUEL_UTILISATEUR.md` §7.1 et `docs/ACKNOWLEDGEMENTS.md`.
 8. **Copie des fichiers NPOAP** vers le dossier d'installation
 9. **Création de `LANCER_NPOAP.bat`** dans ce dossier
 10. **Test** si `test_installation.py` est présent
@@ -56,6 +56,12 @@ Ces actions se font **après** l'installation principale, depuis le dossier NPOA
 | `Installation_fsps/prospector.bat` | Lance sous **WSL2** le script Linux `Installation_fsps/install_prospector_wsl.sh` : **venv dédié** dans WSL, **gfortran**, tentative d’installation complète incluant **fsps** (souvent plus simple que sous Windows natif). **Indépendant** de Conda Windows : NPOAP continue d’utiliser `astroenv` pour l’interface ; cette voie sert surtout à un environnement Prospector/FSPS sous Linux. |
 
 La liste courte est aussi dans **`LISTE_INSTALL_OPTIONNELS.txt`**.
+
+### Cosmologie SNe (sncosmo)
+
+Le module **sncosmo** (SALT2/SALT3) est désormais inclus dans l’installation initiale via **`requirements.txt`**.
+
+Les filtres **Gaia G, G_Bp, G_Rp** sont mappés vers les bandes sncosmo `gaia::g`, `gaia::gbp`, `gaia::grp`. Le premier lancement peut télécharger les surfaces de modèle SALT (accès réseau).
 
 ### Prospector / FSPS : faut-il encore le `.bat` et le `.ps1` Windows ?
 
