@@ -25,6 +25,7 @@ except ImportError as e:
     EasyLuckyImagingTab = None
     print(f"Warning: EasyLuckyImagingTab non disponible: {e}")
 from gui.cluster_analysis_tab import ClusterAnalysisTab
+from gui.occultations_tab import OccultationsTab
 from gui.spectroscopy_tab import SpectroscopyTab
 try:
     from gui.catalogues_tab import CataloguesTab
@@ -69,6 +70,10 @@ class MainWindow:
             self.photometry_exoplanets_tab, "data_analysis_tab", None
         )
         self.asteroid_photometry_tab = AsteroidPhotometryTab(self.notebook)
+        self.occultations_tab = OccultationsTab(
+            self.notebook,
+            night_observation_tab=self.night_observation_tab if NIGHT_OBS_AVAILABLE else None,
+        )
         self.transient_photometry_tab = TransientPhotometryTab(self.notebook)
         self.planetarium_tab = PlanetariumTab(self.notebook)
 
@@ -108,6 +113,7 @@ class MainWindow:
         self.notebook.add(self.data_reduction_tab.frame, text="🛠️ Réduction de Données")
         self.notebook.add(self.photometry_exoplanets_tab, text="🔭 Photométrie Exoplanètes")
         self.notebook.add(self.asteroid_photometry_tab.frame, text="🛰️ Photométrie Astéroïdes")
+        self.notebook.add(self.occultations_tab, text="🌑 Occultation")
         self.notebook.add(self.transient_photometry_tab, text="💥 Photométrie Transitoires")
         self.notebook.add(self.stars_container, text="⭐ Etoiles")
         self.notebook.add(self.cluster_analysis_tab, text="📊 Analyse d'amas")

@@ -122,8 +122,9 @@ Vizier.server = 'http://vizier.cfa.harvard.edu/'
 def _dataframe_to_lc_series(df):
     """
     Extrait (time, flux, flux_err) depuis un CSV photométrie NPOAP.
-    Colonnes flux : rel_flux_T1_fn (prioritaire), flux, rel_flux ; sinon mag_T1_fn (+ mag_err_T1_fn)
-    convertie en flux linéaire (f = 10**(-0.4*m)) pour la modélisation.
+    Colonnes flux : rel_flux_T1_fn (prioritaire), flux, rel_flux ; sinon magnitude
+    différentielle mag_T1_fn ou mag_T1_G (rapport image-par-image), avec erreur
+    mag_err_T1_fn ou rmsMag_T1 ; convertie en flux linéaire (f = 10**(-0.4*m)).
     """
     time_col = next((c for c in ["JD-UTC", "JD_UTC", "time", "Time"] if c in df.columns), None)
     if time_col is None:
@@ -135,20 +136,28 @@ def _dataframe_to_lc_series(df):
         err_col = next((c for c in ["rel_flux_err_T1", "flux_err", "err"] if c in df.columns), None)
         fe = np.asarray(df[err_col], dtype=float) if err_col else None
         return t, f, fe
-    if "mag_T1_fn" in df.columns:
-        mag = np.asarray(df["mag_T1_fn"], dtype=float)
+    mag_col = next((c for c in ["mag_T1_fn", "mag_T1_G"] if c in df.columns), None)
+    if mag_col is not None:
+        mag = np.asarray(df[mag_col], dtype=float)
         f = np.full_like(mag, np.nan, dtype=float)
         ok = np.isfinite(mag)
         f[ok] = np.power(10.0, -0.4 * mag[ok])
-        if "mag_err_T1_fn" in df.columns:
-            sm = np.asarray(df["mag_err_T1_fn"], dtype=float)
+        err_mag_col = next(
+            (c for c in ["mag_err_T1_fn", "rmsMag_T1", "mag_err_T1_G"] if c in df.columns),
+            None,
+        )
+        if err_mag_col is not None:
+            sm = np.asarray(df[err_mag_col], dtype=float)
             fe = np.full_like(f, np.nan, dtype=float)
             o2 = ok & np.isfinite(sm) & np.isfinite(f) & (f > 0)
             fe[o2] = f[o2] * (np.log(10.0) * 0.4) * np.abs(sm[o2])
         else:
             fe = None
         return t, f, fe
-    raise ValueError("CSV : ni rel_flux_T1_fn (ou flux) ni mag_T1_fn.")
+    raise ValueError(
+        "CSV : ni rel_flux_T1_fn (ou flux) ni magnitude différentielle "
+        "(mag_T1_fn ou mag_T1_G)."
+    )
 
 
 def _compute_fov_center_and_radius_for_astrometry(wcs, shape):
@@ -5379,7 +5388,7 @@ class AsteroidPhotometryTab:
         logger.info("Réglages Gaia réinitialisés : filtre=G, delta_to_G=0.000")
 
     def _load_photometry_trans_coeff_from_journal(self):
-        """Charge (a, b) depuis le CSV paire ou le journal ; bande catalogue déduite du « Filtre utilisé »."""
+        """Charge (a, b) : priorité à la ligne « Coefficient médian » du CSV paire, sinon dernière sauvegarde / journal."""
         filt = (self.photometry_filter_var.get() or "").strip()
         if not filt:
             messagebox.showwarning(
@@ -5406,8 +5415,8 @@ class AsteroidPhotometryTab:
                     f"(ref_band_id={ref_id}).\n\n"
                     f"Fichier paire attendu : {pair_hint.name}\n"
                     "ou ligne correspondante dans coefficients_journal.csv.\n\n"
-                    "Enregistrez les coefficients depuis l'onglet Réduction (même filtre + même bande de référence) ; "
-                    "optionnel : « Médiane 2σ → CSV paire »."
+                    "Enregistrez des coefficients depuis l'onglet Réduction (même filtre + bande) ; "
+                    "puis « Coefficient médian » pour la ligne de synthèse lue en priorité."
                 ),
             )
             return

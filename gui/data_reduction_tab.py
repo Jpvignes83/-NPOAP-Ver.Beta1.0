@@ -420,18 +420,27 @@ class CCDProcGUI:
         ttk.Button(r3, text="Sauvegarder le coefficient", command=self._trans_save_coefficients, width=24).pack(
             side=tk.LEFT, padx=2
         )
-        ttk.Button(
-            r3,
-            text="Médiane 2σ → CSV paire",
-            command=self._trans_append_median_2sigma_aggregate,
-            width=22,
-        ).pack(side=tk.LEFT, padx=2)
         ttk.Label(
             r3,
             text=f"Dossier : {transformation_storage_dir()}",
             font=("Arial", 8),
             foreground="gray",
         ).pack(side=tk.LEFT, padx=8)
+
+        r3b = ttk.Frame(box)
+        r3b.pack(fill=tk.X, pady=(8, 4))
+        ttk.Button(
+            r3b,
+            text="Coefficient médian",
+            command=self._trans_append_median_2sigma_aggregate,
+            width=24,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Label(
+            r3b,
+            text="(synthèse 2σ sur les enregistrements du CSV — utilisé en priorité par la photométrie)",
+            font=("Arial", 8),
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=10)
 
         cols = ("i", "mi", "mc", "md")
         self._trans_tree = ttk.Treeview(box, columns=cols, show="headings", height=5)
@@ -679,7 +688,7 @@ class CCDProcGUI:
             self._showerror("Sauvegarde", str(e))
 
     def _trans_append_median_2sigma_aggregate(self):
-        """Ajoute une ligne de synthèse (médiane a,b après clipping 2σ) dans le CSV paire filtre×bande."""
+        """Écrit la ligne « coefficient médian » (synthèse 2σ) dans le CSV paire filtre×bande."""
         obs = self._trans_obs_filter_var.get().strip() or "UNKNOWN"
         ref_label = self._trans_ref_combo.get()
         ref_id = self._trans_ref_band_id()
@@ -687,12 +696,13 @@ class CCDProcGUI:
             out = append_median_2sigma_aggregate_row_to_pair_csv(
                 obs, ref_id, ref_band_label=ref_label
             )
-            self.log_message(f"📊 Ligne agrégée médiane 2σ écrite : {out}")
+            self.log_message(f"📊 Coefficient médian écrit : {out}")
             self._showinfo(
                 "CSV paire",
-                f"Fichier mis à jour (médiane des pentes et intercepts après exclusion > 2σ) :\n{out}\n\n"
-                "La dernière ligne contient mag_std (médiane des RMS des mesures retenues). "
-                "Le chargement côté astéroïdes lit ce fichier en priorité.",
+                f"Fichier mis à jour (coefficient médian = médiane 2σ des pentes et intercepts) :\n{out}\n\n"
+                "La dernière ligne de synthèse contient mag_std (médiane des RMS retenus). "
+                "La photométrie (astéroïdes, transitoires, exoplanètes / HOPS) privilégie cette ligne "
+                "si elle est présente.",
             )
         except FileNotFoundError as e:
             self._showwarning("CSV paire", str(e))

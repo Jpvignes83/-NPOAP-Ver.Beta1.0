@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.patches import Circle
 from astropy.io import fits
 from astropy.visualization import ZScaleInterval
 from astropy.wcs import WCS
@@ -114,6 +115,101 @@ def get_image_orientation(wcs, center_x, center_y):
         'rotation': sensor_rotation,
         'parity': parity
     }
+
+
+def _header_str_nonempty(header, key):
+    v = header.get(key)
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return s
+
+
+def _iter_skycoord_candidates(ra_s, dec_s):
+    """
+    Produit des SkyCoord plausibles à partir d'une paire (RA, Dec) telle qu'en entête FITS
+    (sexagésimal, degrés décimaux, ou heures / degrés).
+    """
+    if not ra_s or not dec_s:
+        return
+    # N.I.N.A. / SGP: "12 10 35" et "-63 15 02" (H M S / D M S en espaces, sans ':')
+    r_parts, d_parts = ra_s.split(), dec_s.split()
+    if len(r_parts) == 3 and len(d_parts) == 3:
+        try:
+            ra_hms = f"{r_parts[0]}:{r_parts[1]}:{r_parts[2]}"
+            dec_dms = f"{d_parts[0]}:{d_parts[1]}:{d_parts[2]}"
+            yield SkyCoord(ra=ra_hms, dec=dec_dms, unit=(u.hourangle, u.deg), frame="icrs")
+        except Exception:
+            pass
+    # Chaînes sexagésimales
+    if ":" in ra_s or ":" in dec_s:
+        for attempt in (
+            (u.hourangle, u.deg),
+            (u.deg, u.deg),
+        ):
+            try:
+                yield SkyCoord(ra=ra_s, dec=dec_s, unit=attempt, frame="icrs")
+            except Exception:
+                continue
+    try:
+        fra, fde = float(ra_s), float(dec_s)
+    except (TypeError, ValueError):
+        return
+    # Cas courant: RA et Dec en degrés (WCS, astrométrie, etc.)
+    if 0.0 <= fra <= 360.0 and -90.0 <= fde <= 90.0:
+        try:
+            yield SkyCoord(ra=fra * u.deg, dec=fde * u.deg, frame="icrs")
+        except Exception:
+            pass
+    # Cas classique: RA en heures, Dec en degrés
+    if 0.0 <= fra < 24.0 and -90.0 <= fde <= 90.0:
+        try:
+            yield SkyCoord(ra=fra * u.hourangle, dec=fde * u.deg, frame="icrs")
+        except Exception:
+            pass
+
+
+def find_object_pixel_from_header(wcs, header, nx, ny):
+    """
+    Récupère la position cible (OBJCTRA/OBJCTDEC ou mots-clés proches) et la projette
+    en pixels, uniquement si la cible est dans l'image.
+    """
+    key_pairs = [
+        ("OBJCTRA", "OBJCTDEC"),
+        ("TARG-RA", "TARG-DEC"),
+        ("TARRA", "TARDE"),
+        ("TARG1RA", "TARG1DEC"),
+        ("TARG-RA1", "TARG-DEC1"),
+        ("RA_OBJ", "DEC_OBJ"),
+        ("OBJ-RA", "OBJ-DEC"),
+    ]
+    margin = 0.5
+    for ra_key, dec_key in key_pairs:
+        ra_s = _header_str_nonempty(header, ra_key)
+        dec_s = _header_str_nonempty(header, dec_key)
+        if not ra_s or not dec_s:
+            continue
+        oob = None
+        for sc in _iter_skycoord_candidates(ra_s, dec_s):
+            try:
+                x, y = wcs.world_to_pixel(sc)
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    continue
+                xf, yf = float(x), float(y)
+                oob = (xf, yf)
+                if -margin <= xf < nx + margin and -margin <= yf < ny + margin:
+                    return oob
+            except Exception:
+                continue
+        if oob is not None and ra_key == "OBJCTRA" and dec_key == "OBJCTDEC":
+            logger.info(
+                f"[MESURE] OBJCTRA/OBJCTDEC se projettent en ({oob[0]:.1f}, {oob[1]:.1f}) "
+                f"hors de l'image {nx}×{ny} (cible catalogue hors du champ, "
+                f"ou pointage différent de l'entête cible N.I.N.A.)."
+            )
+    return None
 
 
 class EasyLuckyImagingTab(ttk.Frame):
@@ -578,12 +674,38 @@ class EasyLuckyImagingTab(ttk.Frame):
             command=self._start_nina_conversion_from_lucky
         ).pack(pady=(6, 0), fill="x")
         
-        # Section 4: Stacking (ELI)
+        # Section 4: Stacking (ELI) avec ascenseur vertical
         stacking_frame = ttk.LabelFrame(left_col, text="4. Stacking (ELI - Easy Lucky Imaging)", padding=10)
-        stacking_frame.pack(fill="x", pady=5)
+        stacking_frame.pack(fill="both", expand=True, pady=5)
+
+        stacking_scroll_container = ttk.Frame(stacking_frame)
+        stacking_scroll_container.pack(fill="both", expand=True)
+
+        stacking_canvas = tk.Canvas(stacking_scroll_container, highlightthickness=0)
+        stacking_canvas.pack(side="left", fill="both", expand=True)
+
+        stacking_scrollbar = ttk.Scrollbar(
+            stacking_scroll_container,
+            orient="vertical",
+            command=stacking_canvas.yview
+        )
+        stacking_scrollbar.pack(side="right", fill="y")
+        stacking_canvas.configure(yscrollcommand=stacking_scrollbar.set)
+
+        stacking_content = ttk.Frame(stacking_canvas)
+        stacking_canvas_window = stacking_canvas.create_window((0, 0), window=stacking_content, anchor="nw")
+
+        def _update_stacking_scrollregion(_event):
+            stacking_canvas.configure(scrollregion=stacking_canvas.bbox("all"))
+
+        def _resize_stacking_content(_event):
+            stacking_canvas.itemconfigure(stacking_canvas_window, width=_event.width)
+
+        stacking_content.bind("<Configure>", _update_stacking_scrollregion)
+        stacking_canvas.bind("<Configure>", _resize_stacking_content)
         
         # Bouton pour voir l'image de référence
-        ref_image_button_frame = ttk.Frame(stacking_frame)
+        ref_image_button_frame = ttk.Frame(stacking_content)
         ref_image_button_frame.pack(fill="x", pady=(0, 10))
         
         ttk.Button(
@@ -599,8 +721,8 @@ class EasyLuckyImagingTab(ttk.Frame):
             foreground="gray"
         ).pack(side="left")
         
-        ttk.Label(stacking_frame, text="Position de référence pour l'alignement sub-pixel (x, y):").pack(anchor="w", pady=2)
-        ref_pos_frame = ttk.Frame(stacking_frame)
+        ttk.Label(stacking_content, text="Position de référence pour l'alignement sub-pixel (x, y):").pack(anchor="w", pady=2)
+        ref_pos_frame = ttk.Frame(stacking_content)
         ref_pos_frame.pack(fill="x", pady=5)
         self.ref_x_var = tk.StringVar(value="")
         self.ref_y_var = tk.StringVar(value="")
@@ -610,15 +732,15 @@ class EasyLuckyImagingTab(ttk.Frame):
         ttk.Label(ref_pos_frame, text="(en pixels - position d'une étoile brillante)", 
                  font=("Helvetica", 8), foreground="gray").pack(side="left", padx=(10, 0))
         
-        ttk.Label(stacking_frame, text="Méthode de stacking:").pack(anchor="w", pady=(10, 2))
+        ttk.Label(stacking_content, text="Méthode de stacking:").pack(anchor="w", pady=(10, 2))
         self.lucky_method_var = tk.StringVar(value="median")
-        method_frame = ttk.Frame(stacking_frame)
+        method_frame = ttk.Frame(stacking_content)
         method_frame.pack(fill="x", pady=5)
         for method, label in [("median", "Médiane (recommandé)"), ("mean", "Moyenne"), ("sigma_clip", "Sigma-clip")]:
             ttk.Radiobutton(method_frame, text=label, variable=self.lucky_method_var, value=method).pack(side="left", padx=(0, 20))
         
         # Option de sauvegarde automatique
-        save_options_frame = ttk.Frame(stacking_frame)
+        save_options_frame = ttk.Frame(stacking_content)
         save_options_frame.pack(fill="x", pady=(10, 0))
         
         self.auto_save_var = tk.BooleanVar(value=False)
@@ -636,7 +758,7 @@ class EasyLuckyImagingTab(ttk.Frame):
         ).pack(side="left", padx=(10, 0))
         
         # Bouton de stacking dans la section ELI
-        stacking_button_frame = ttk.Frame(stacking_frame)
+        stacking_button_frame = ttk.Frame(stacking_content)
         stacking_button_frame.pack(fill="x", pady=(15, 5))
         
         ttk.Button(
@@ -1682,7 +1804,19 @@ class EasyLuckyImagingTab(ttk.Frame):
             except Exception as e:
                 pixel_scale_arcsec = None
                 logger.warning(f"[MESURE] Impossible de calculer l'échelle pixel depuis WCS: {e}")
-            
+
+            # Position cible (OBJCTRA/OBJCTDEC ou synonymes) — affichage seulement si dans le cadre
+            object_pixel_pos = find_object_pixel_from_header(wcs, header, nx, ny)
+            if object_pixel_pos is not None:
+                logger.info(
+                    f"[MESURE] Cible FITS → pixels (dans le cadre): x={object_pixel_pos[0]:.1f}, y={object_pixel_pos[1]:.1f}"
+                )
+            else:
+                logger.info(
+                    "[MESURE] Cible (OBJCTRA/OBJCTDEC ou mots-clés proches) absente, hors cadre, "
+                    "ou impossible à interpréter de façon fiable."
+                )
+
             # Créer une fenêtre de visualisation
             measure_window = tk.Toplevel(self)
             measure_window.title(f"Mesure de séparation - {image_path.name}")
@@ -1750,6 +1884,30 @@ class EasyLuckyImagingTab(ttk.Frame):
             ax.set_ylabel("Y (pixels)")
             ax.set_title("Mesure de séparation - Sélectionnez les deux étoiles")
             cbar = fig.colorbar(im, ax=ax, label='Intensité')
+
+            # Cercle sur la cible (position uniquement si déjà vérifiée dans le cadre)
+            if object_pixel_pos is not None:
+                obj_x, obj_y = object_pixel_pos
+                circle_radius = max(12.0, min(nx, ny) * 0.02)
+                obj_circle = Circle(
+                    (obj_x, obj_y),
+                    radius=circle_radius,
+                    fill=False,
+                    edgecolor="red",
+                    linewidth=2.0,
+                    linestyle="-",
+                    zorder=5,
+                )
+                ax.add_patch(obj_circle)
+                ax.text(
+                    obj_x + circle_radius + 3,
+                    obj_y + circle_radius + 3,
+                    "OBJCTRA/OBJCTDEC",
+                    color="red",
+                    fontsize=8,
+                    weight="bold",
+                    zorder=5,
+                )
             
             canvas = FigureCanvasTkAgg(fig, master=fig_frame)
             canvas.draw()

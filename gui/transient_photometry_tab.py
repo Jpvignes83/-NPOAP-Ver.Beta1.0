@@ -86,17 +86,26 @@ class TransientPhotometryTab(ttk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
-        # Layout en deux colonnes avec PanedWindow
-        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Frame gauche (workflow STDPipe existant)
-        left_frame = ttk.Frame(paned, padding=5)
-        paned.add(left_frame, weight=2)
-        
-        # Frame droite (recherche Astro-COLIBRI)
-        right_frame = ttk.Frame(paned, padding=5)
-        paned.add(right_frame, weight=1)
+        # Layout principal (uniquement la partie STDPipe à gauche)
+        container = ttk.Frame(self, padding=5)
+        container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        sne_fr = ttk.LabelFrame(container, text="Courbes SN Ia (optionnel, sncosmo)", padding=8)
+        sne_fr.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(
+            sne_fr,
+            text="Ajustement SALT2 / SALT3 sur CSV (MJD, filtre Gaia G / G_Bp / G_Rp, mag, erreur). "
+            "Profil d’installation : requirements-cosmology-sne.txt",
+            wraplength=760,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ttk.Button(sne_fr, text="Ouvrir la boîte de dialogue…", command=self._open_sncosmo_dialog).pack(
+            side=tk.RIGHT
+        )
+
+        # Frame principal (workflow STDPipe existant)
+        left_frame = ttk.Frame(container, padding=5)
+        left_frame.pack(fill=tk.BOTH, expand=True)
         
         # ========== PARTIE GAUCHE ==========
         # Titre
@@ -141,10 +150,8 @@ class TransientPhotometryTab(ttk.Frame):
             
             test_btn = ttk.Button(left_frame, text="🔍 Tester l'import STDPipe", command=test_stdpipe)
             test_btn.grid(row=2, column=0, columnspan=3, pady=5)
-            # Créer quand même le cadre recherche transitoires (Astro-COLIBRI) à droite
-            self.create_transient_search_frame(right_frame)
             return
-        
+
         # Section 1: Chargement image science
         section1 = ttk.LabelFrame(left_frame, text="1. Image Science", padding=10)
         section1.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5, padx=5)
@@ -268,23 +275,45 @@ class TransientPhotometryTab(ttk.Frame):
         ttk.Label(section5, text="FWHM (PSF, px):").grid(row=1, column=2, sticky="e", padx=5)
         self.phot_fwhm_var = tk.DoubleVar(value=3.0)
         ttk.Entry(section5, textvariable=self.phot_fwhm_var, width=10).grid(row=1, column=3, padx=5)
-        
-        ttk.Button(section5, text="📊 Effectuer Photométrie", 
-                  command=self.perform_photometry).grid(row=2, column=0, columnspan=4, pady=5)
-        
-        ttk.Button(section5, text="💾 Exporter Résultats", 
-                  command=self.export_results).grid(row=3, column=0, columnspan=4, pady=5)
+
+        self.use_npoap_trans_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            section5,
+            text="Utiliser le coefficient de transformation (priorité : « Coefficient médian » du CSV NPOAP)",
+            variable=self.use_npoap_trans_var,
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=2, padx=2)
+        ttk.Label(section5, text="Filtre observateur (si vide : clé FILTER du FITS science) :").grid(
+            row=3, column=0, columnspan=2, sticky="e", padx=5, pady=2
+        )
+        self.npoap_filter_override_var = tk.StringVar(value="")
+        ttk.Entry(section5, textvariable=self.npoap_filter_override_var, width=20).grid(
+            row=3, column=2, columnspan=2, sticky="w", padx=5, pady=2
+        )
+
+        ttk.Button(
+            section5, text="📊 Effectuer Photométrie", command=self.perform_photometry
+        ).grid(row=4, column=0, columnspan=4, pady=5)
+
+        ttk.Button(
+            section5, text="💾 Exporter Résultats", command=self.export_results
+        ).grid(row=5, column=0, columnspan=4, pady=5)
 
         # Barre de progression
         self.progress = ttk.Progressbar(left_frame, length=400, mode="determinate")
         self.progress.grid(row=7, column=0, columnspan=3, pady=10, sticky="ew")
         
-        # ========== PARTIE DROITE ==========
-        # Recherche transitoires (Astro-COLIBRI)
-        self.create_transient_search_frame(right_frame)
-        
-        # Zone de visualisation (optionnelle, à ajouter plus tard)
-        # self.create_visualization_widgets()
+        # (Ancienne partie droite Astro-COLIBRI supprimée de l'interface)
+
+    def _open_sncosmo_dialog(self):
+        """Ajustement SN Ia (SALT2/SALT3) via sncosmo — dépendance optionnelle."""
+        try:
+            from gui.transient_sncosmo_dialog import open_transient_sncosmo_dialog
+
+            top = self.winfo_toplevel()
+            open_transient_sncosmo_dialog(top)
+        except Exception as e:
+            logger.exception("Ouverture dialogue sncosmo")
+            messagebox.showerror("sncosmo", f"Impossible d'ouvrir l'outil SN Ia :\n{e}", parent=self.winfo_toplevel())
 
     def browse_science_fits(self):
         initial_dir = self.base_dir
@@ -633,20 +662,50 @@ class TransientPhotometryTab(ttk.Frame):
         method = self.phot_method_var.get()
         fwhm = self.phot_fwhm_var.get()
         
+        use_npoap = self.use_npoap_trans_var.get()
+        npo_filt = (self.npoap_filter_override_var.get() or "").strip()
         self.progress["value"] = 0
-        Thread(target=self._photometry_task, 
-               args=(self.science_image_path, self.transients_table, catalog, filter_name, method, fwhm), 
-               daemon=True).start()
+        Thread(
+            target=self._photometry_task,
+            args=(
+                self.science_image_path,
+                self.transients_table,
+                catalog,
+                filter_name,
+                method,
+                fwhm,
+                use_npoap,
+                npo_filt,
+            ),
+            daemon=True,
+        ).start()
 
-    def _photometry_task(self, image_path: str, sources: Table, catalog: str, 
-                        filter_name: str, method: str, fwhm: float):
+    def _photometry_task(
+        self,
+        image_path: str,
+        sources: Table,
+        catalog: str,
+        filter_name: str,
+        method: str,
+        fwhm: float,
+        use_npoap: bool = True,
+        npoap_obs_filter: str = "",
+    ):
         try:
             self.progress["value"] = 20
-            logger.info(f"Photométrie avec catalogue {catalog}, filtre {filter_name}, méthode {method}...")
-            
+            logger.info(
+                f"Photométrie avec catalogue {catalog}, filtre {filter_name}, méthode {method}..."
+            )
+
             photometry = self.stdpipe_wrapper.perform_photometry(
-                image_path, sources, catalog=catalog,
-                filter_name=filter_name, photometry_method=method, fwhm=fwhm if method == 'psf' else None
+                image_path,
+                sources,
+                catalog=catalog,
+                filter_name=filter_name,
+                photometry_method=method,
+                fwhm=fwhm if method == "psf" else None,
+                use_npoap_transformation=use_npoap,
+                npoap_obs_filter=npoap_obs_filter or None,
             )
             
             if photometry:
@@ -808,15 +867,17 @@ class TransientPhotometryTab(ttk.Frame):
         results_frame.pack(fill="both", expand=True, pady=5)
         results_scroll = ttk.Scrollbar(results_frame)
         results_scroll.pack(side="right", fill="y")
-        self.transient_results_listbox = tk.Listbox(results_frame, yscrollcommand=results_scroll.set, height=15)
+        # Augmenter légèrement la hauteur de la zone de résultats (~+10 %)
+        self.transient_results_listbox = tk.Listbox(results_frame, yscrollcommand=results_scroll.set, height=17)
         self.transient_results_listbox.pack(side="left", fill="both", expand=True)
         results_scroll.config(command=self.transient_results_listbox.yview)
         self.transient_results_listbox.bind("<Double-Button-1>", self.on_transient_result_selected)
         btn_frame = ttk.Frame(results_frame)
         btn_frame.pack(fill="x", pady=5)
-        ttk.Button(btn_frame, text="📋 Détails", command=self.get_transient_details).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="🔄 Actualiser", command=self.refresh_transient_results).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="📁 NINA.json", command=self.export_transient_to_nina).pack(side="left", padx=2)
+        # Boutons empilés verticalement
+        ttk.Button(btn_frame, text="📋 Détails", command=self.get_transient_details).pack(side="top", padx=2, pady=1, fill="x")
+        ttk.Button(btn_frame, text="🔄 Actualiser", command=self.refresh_transient_results).pack(side="top", padx=2, pady=1, fill="x")
+        ttk.Button(btn_frame, text="📁 NINA.json", command=self.export_transient_to_nina).pack(side="top", padx=2, pady=1, fill="x")
 
     def _ra_dec_deg_to_nina_input(self, ra_deg, dec_deg):
         """Convertit RA/Dec en degrés vers le format NINA InputCoordinates (sexagésimal)."""
@@ -992,7 +1053,7 @@ class TransientPhotometryTab(ttk.Frame):
         """Affiche les résultats Astro-COLIBRI."""
         self.transient_results_listbox.delete(0, tk.END)
         for evt in self.transient_search_results:
-            name = evt.get("source_name") or evt.get("trigger_id") or "N/A"
+            name = evt.get("source_name") 
             ra_val = evt.get("ra")
             dec_val = evt.get("dec")
             if ra_val is not None and dec_val is not None:

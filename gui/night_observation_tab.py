@@ -1081,9 +1081,9 @@ class NightObservationTab(ttk.Frame):
                                          xscrollcommand=list_scrollbar_x.set,
                                          height=25)
         
-        # Configuration des colonnes
-        self.results_tree.heading("Sélection", text="☑")
-        self.results_tree.column("Sélection", width=50, anchor='center')
+        # Configuration des colonnes — cliquer sur « Tout » coche/décoche toutes les lignes visibles
+        self.results_tree.heading("Sélection", text="Tout")
+        self.results_tree.column("Sélection", width=58, anchor='center')
         
         # Astéroïdes/comètes : désignation MPC (souvent « packed », ex. 00433 ou K07Tf8A), pas le nom IAU.
         self.results_tree.heading("Nom", text="Désignation / nom")
@@ -1121,10 +1121,36 @@ class NightObservationTab(ttk.Frame):
         self.canvas = FigureCanvasTkAgg(self.fig, plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     
+    def _toggle_select_all_observables(self) -> None:
+        """Coche toutes les lignes visibles si au moins une est décochée ; sinon tout décoche."""
+        children = self.results_tree.get_children()
+        if not children:
+            return
+        rows: List[Tuple[str, str, List[str]]] = []
+        for item in children:
+            values = self.results_tree.item(item, "values")
+            if len(values) > 1:
+                obj_name = self._object_name_from_display_name(values[1])
+                rows.append((item, obj_name, list(values)))
+        if not rows:
+            return
+        n_selected = sum(1 for _, on, _ in rows if self.selected_objects.get(on, False))
+        select_all = n_selected < len(rows)
+        for item, obj_name, values_list in rows:
+            self.selected_objects[obj_name] = select_all
+            values_list[0] = "☑" if select_all else "☐"
+            self.results_tree.item(item, values=tuple(values_list))
+        self.update_plot()
+
     def on_tree_click(self, event):
         """Gère le clic sur le treeview pour sélectionner/désélectionner les objets
         et, lors de la sélection, affiche une fenêtre de détails + met en évidence la trajectoire."""
         region = self.results_tree.identify_region(event.x, event.y)
+        if region == "heading":
+            column = self.results_tree.identify_column(event.x)
+            if column == "#1":
+                self._toggle_select_all_observables()
+            return
         if region == "cell":
             column = self.results_tree.identify_column(event.x)
             item = self.results_tree.identify_row(event.y)
@@ -1248,6 +1274,85 @@ class NightObservationTab(ttk.Frame):
             if obj is not None:
                 selected_list.append(obj)
         return selected_list
+
+    def get_observation_date_interval_yyyy_mm_dd(self) -> Tuple[str, str]:
+        """
+        Lit l’intervalle calendaire des champs « Date d’observation » et « Intervalle »
+        (date de fin), comme pour le calcul d’éphémérides / le TAP exoplanètes.
+
+        Retourne (date_début, date_fin) au format ``YYYY-MM-DD`` avec ``date_fin`` >= ``date_début``.
+        Si la date de début est invalide : ``("", "")``. Sans intervalle coché : fin = début.
+        Si la date de fin est vide ou invalide alors que l’intervalle est coché : fin = début.
+        """
+        raw_start = self.date_var.get().strip()
+        try:
+            t_start = datetime.strptime(raw_start, "%Y-%m-%d")
+        except ValueError:
+            return "", ""
+
+        d_start = t_start.strftime("%Y-%m-%d")
+        d_end = d_start
+
+        if self.use_interval_var.get():
+            raw_end = (self.date_end_var.get() or "").strip()
+            if raw_end:
+                try:
+                    t_end = datetime.strptime(raw_end, "%Y-%m-%d")
+                    if t_end < t_start:
+                        t_start, t_end = t_end, t_start
+                    d_start = t_start.strftime("%Y-%m-%d")
+                    d_end = t_end.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+
+        return d_start, d_end
+
+    def get_export_bundle_for_sora(self) -> Tuple[List[str], str, str, float, float, float, str]:
+        """
+        Astéroïdes et comètes cochés + intervalle calendaire (UTC) + site observatoire pour SORA.
+
+        Retourne
+        --------
+        bodies, time_beg, time_end, lon_deg, lat_deg, height_m, site_name
+
+        Les dates reprennent ``get_observation_date_interval_yyyy_mm_dd()`` (champs Paramètres
+        de l’onglet). ``time_beg`` / ``time_end`` sont ``AAAA-MM-JJT00:00:00`` et
+        ``…T23:59:59`` du dernier jour de l’intervalle.
+        Les coordonnées reprennent ``self.location`` (config observatoire).
+        """
+        bodies: List[str] = []
+        for obj in self._get_selected_objects():
+            if getattr(obj, "obj_type", "") in ("asteroid", "comet"):
+                n = (obj.name or "").strip()
+                if n:
+                    bodies.append(n)
+        seen = set()
+        uniq: List[str] = []
+        for b in bodies:
+            if b not in seen:
+                seen.add(b)
+                uniq.append(b)
+        bodies = uniq
+
+        d0, d1 = self.get_observation_date_interval_yyyy_mm_dd()
+        if d0:
+            time_beg = f"{d0}T00:00:00"
+            time_end = f"{d1}T23:59:59"
+        else:
+            time_beg = ""
+            time_end = ""
+
+        if self.location is not None:
+            lat_deg = float(self.location.lat.to(u.deg).value)
+            lon_deg = float(self.location.lon.to(u.deg).value)
+            height_m = float(self.location.height.to(u.m).value)
+        else:
+            lat_deg = float(OBSERVATORY.get("lat", 0.0))
+            lon_deg = float(OBSERVATORY.get("lon", 0.0))
+            height_m = float(OBSERVATORY.get("elev", 0.0))
+        site_name = str(OBSERVATORY.get("name", "Site") or "Site")
+
+        return bodies, time_beg, time_end, lon_deg, lat_deg, height_m, site_name
 
     def on_visualize_in_c2a(self) -> None:
         """
