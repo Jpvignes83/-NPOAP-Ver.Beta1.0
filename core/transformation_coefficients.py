@@ -42,7 +42,7 @@ MAGNITUDE_MIN_FOR_COEFF = -15.0
 # SNR minimal sur le flux net d'ouverture (ciel soustrait) pour entrer dans l'ajustement transformation.
 MIN_SNR_FOR_TRANS_COEFF = 20.0
 
-# Ligne de synthèse (médiane après clipping 2σ) écrite dans le CSV paire ; exclue des recalculs suivants.
+# Ligne de synthèse « coefficient médian » (médiane après clipping 2σ) dans le CSV paire ; exclue des recalculs.
 AGGREGATE_ROW_FITS_MARKER = "__AGG_MEDIAN_2SIG__"
 
 
@@ -205,20 +205,38 @@ def _as_str_col(tab: Table, *candidates: str) -> np.ndarray:
 
 def _gaia_non_variable_mask(var_flag: np.ndarray) -> np.ndarray:
     """
-    Masque des étoiles Gaia à conserver (non variables).
+    Masque des étoiles Gaia à conserver (non variables) pour le champ
+    ``phot_variable_flag`` (VizieR I/355, colonne ``VarFlag``) :
 
-    Les entrées vides/indisponibles sont conservées ; seules les valeurs explicitement
-    marquées variables sont rejetées.
+    - ``NOT_AVAILABLE`` / absent : on conserve (pas d'exclusion côté variabilité) ;
+    - ``VARIABLE`` : on exclut (source listée au moins une table ``vari_*``).
+
+    Autres textes explicites « constante » / « non variable » : conservés.
     """
     vf = np.asarray(var_flag, dtype=object)
     keep = np.ones(len(vf), dtype=bool)
     for i, raw in enumerate(vf):
         t = str(raw).strip().lower()
-        if t in ("", "none", "nan", "--", "not_available", "notavailable", "?"):
+        if t in (
+            "",
+            "none",
+            "nan",
+            "--",
+            "not_available",
+            "not available",
+            "notavailable",
+            "?",
+        ):
             continue
         if t in ("false", "0", "no", "n", "f", "non-variable", "non_variable", "constant"):
             continue
         if ("non" in t and "vari" in t) or ("not" in t and "vari" in t):
+            continue
+        # Ne pas confondre « invariable(s) » avec le test sur la sous-chaîne « vari »
+        if t in ("invariable", "invariables") or t.startswith("invaria"):
+            continue
+        if t in ("variable",) or t.startswith("variable/"):
+            keep[i] = False
             continue
         if "vari" in t or t in ("true", "1", "yes", "y", "t", "v"):
             keep[i] = False
@@ -457,6 +475,11 @@ def compute_instrumental_and_catalog(
     On ne conserve que les étoiles pour lesquelles la magnitude instrumentale et la magnitude
     catalogue observée sont strictement supérieures à ``MAGNITUDE_MIN_FOR_COEFF`` (-15).
 
+    Bandes **Gaia** (G, BP, RP) : les sources avec ``phot_variable_flag = VARIABLE`` sont
+    exclues dès la requête catalogue (``query_gaia_dr3_field`` + ``_gaia_non_variable_mask``).
+    Bandes **Johnson** (APASS) : le catalogue ne fournit pas ici d'équivalent fiable de ce
+    flag — aucun filtrage par variabilité n'est appliqué sur ce chemin.
+
     Si ``min_snr`` > 0, on écarte les sources dont le SNR du flux net (ouverture moins ciel
     annulaire) est strictement inférieur à ce seuil. Le bruit est estimé à partir de l'écart-type
     par pixel ``std`` (``sigma_clipped_stats`` sur l'image), en supposant un bruit blanc :
@@ -625,7 +648,12 @@ def compute_instrumental_and_catalog(
 
 
 def fit_transformation(mag_inst: np.ndarray, mag_cat_der: np.ndarray) -> tuple[float, float, float, int]:
-    """Régression linéaire mag_cat = a * mag_inst + b ; retourne (a, b, rms, n)."""
+    """
+    Régression linéaire mag_cat = a * mag_inst + b sur **toutes** les étoiles valides.
+
+    Le clip médiane ± 2σ n'est **pas** appliqué ici : il sert à la ligne
+    **« Coefficient médian »** du CSV (``append_median_2sigma_aggregate_row_to_pair_csv``).
+    """
     x = np.asarray(mag_inst, dtype=float)
     y = np.asarray(mag_cat_der, dtype=float)
     floor = MAGNITUDE_MIN_FOR_COEFF
@@ -718,17 +746,40 @@ def _read_coefficient_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _mask_within_2sigma_1d(vals: np.ndarray) -> np.ndarray:
-    """Masque booléen : valeurs finies et dans [médiane − 2σ, médiane + 2σ] (σ = écart-type échantillon)."""
+    """
+    Masque booléen : vrai pour les points **retenus** après exclusion de ceux
+    avec *|x − médiane| > 2σ* (hors de la bande), pas l'inverse.
+
+    σ est l'écart-type (NumPy, somme d'effetifs) de l'ensemble d'échantillons
+    considéré à chaque itération ; le clip est **itéré** (médiane/σ recalculés
+    sur les inliers) pour ne pas gonfler σ avec les valeurs qu'on cherche à écarter.
+    """
     v = np.asarray(vals, dtype=float)
     ok = np.isfinite(v)
-    if int(np.count_nonzero(ok)) < 3:
+    n_ok = int(np.count_nonzero(ok))
+    if n_ok < 3:
         return ok
     vv = v[ok]
-    med = float(np.median(vv))
-    std = float(np.std(vv))
-    if not np.isfinite(std) or std <= 0:
-        return ok
-    return ok & (np.abs(v - med) <= 2.0 * std)
+    keep = np.ones(vv.shape[0], dtype=bool)
+    for _ in range(10):
+        vs = vv[keep]
+        if vs.size < 2:
+            break
+        med = float(np.median(vs))
+        std = float(np.std(vs))
+        if not np.isfinite(std) or std < 1e-15:
+            break
+        # Exclure les extrêmes : garder l'intérieur (|x-M| <= 2σ), pas l'inverse
+        seuil_2s = 2.0 * std
+        new_keep = np.abs(vv - med) <= seuil_2s
+        if not np.any(new_keep):
+            break
+        if np.array_equal(new_keep, keep):
+            break
+        keep = new_keep
+    out = np.zeros(v.shape[0], dtype=bool)
+    out[ok] = keep
+    return out
 
 
 def median_slope_intercept_after_2sigma_clip(
@@ -872,7 +923,7 @@ def append_median_2sigma_aggregate_row_to_pair_csv(
             w.writerow(r)
 
     logger.info(
-        "CSV paire agrégé médiane 2σ : %s (n_retenu=%s, a=%.6f, b=%.6f, mag_std=%s)",
+        "CSV paire : coefficient médian (2σ) : %s (n_retenu=%s, a=%.6f, b=%.6f, mag_std=%s)",
         path,
         n_used,
         a_med,
@@ -901,6 +952,32 @@ def _parse_mag_std_from_row(row: dict[str, str]) -> float | None:
     return None
 
 
+def _parse_pair_row(
+    row: dict[str, str], pp: Path, obs_filter: str, ref_band_id: str
+) -> tuple[float, float, str, float | None] | None:
+    """Retourne (a, b, desc, mag_std) si la ligne correspond au filtre / bande, sinon None."""
+    rid = (row.get("ref_band_id") or "").strip()
+    if rid and rid != ref_band_id:
+        return None
+    jf = row.get("obs_filter") or ""
+    if jf and not filters_match_for_trans_coeff(obs_filter, jf):
+        return None
+    try:
+        a = float(row["slope"])
+        b = float(row["intercept"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if not (np.isfinite(a) and np.isfinite(b)):
+        return None
+    ts = (row.get("timestamp_utc") or "")[:19]
+    rms = row.get("rms", "")
+    is_med = (row.get("fits") or "").strip() == AGGREGATE_ROW_FITS_MARKER
+    tag = "coefficient_médian" if is_med else "sauvegarde"
+    desc = f"{pp.name} ({tag}) @ {ts}, RMS={rms}"
+    mag_std = _parse_mag_std_from_row(row)
+    return (a, b, desc, mag_std)
+
+
 def load_latest_transformation_coefficient(
     obs_filter: str,
     *,
@@ -908,12 +985,15 @@ def load_latest_transformation_coefficient(
     journal_path: Path | None = None,
 ) -> tuple[float, float, str, float | None] | None:
     """
-    Dernière ligne pertinente : d'abord le CSV paire ``{filtre}__{bande}.csv`` s'il existe,
-    sinon le journal ``coefficients_journal.csv``.
+    Charge les coefficients ``mag_cat ≈ a × m_inst + b`` (réduction NPOAP).
 
-    Retourne ``(a, b, description_courte, mag_std)`` avec ``mag_cat ≈ a × m_inst + b`` (réduction).
-    ``mag_std`` provient de la colonne du même nom si présente, sinon ``None`` (utiliser seulement
-    l'erreur instrumentale côté flux).
+    **CSV paire** ``{filtre}__{bande}.csv`` : priorité à la ligne **coefficient médian**
+    (marqueur ``fits = __AGG_MEDIAN_2SIG__``) si elle existe
+    et correspond — utilisée en photométrie astéroïdes, transitoires, exoplanètes (HOPS), etc.
+    Sinon, dernière **sauvegarde** unitaire correspondante. Puis, à défaut, le journal
+    ``coefficients_journal.csv`` (lignes individuelles seulement).
+
+    Retourne ``(a, b, description_courte, mag_std)`` ; ``mag_std`` si colonne présente, sinon ``None``.
     """
     obs_filter = (obs_filter or "").strip()
     if not obs_filter:
@@ -923,24 +1003,17 @@ def load_latest_transformation_coefficient(
     if pp.is_file():
         prow = _read_coefficient_csv_rows(pp)
         for row in reversed(prow):
-            rid = (row.get("ref_band_id") or "").strip()
-            if rid and rid != ref_band_id:
+            if (row.get("fits") or "").strip() != AGGREGATE_ROW_FITS_MARKER:
                 continue
-            jf = row.get("obs_filter") or ""
-            if jf and not filters_match_for_trans_coeff(obs_filter, jf):
+            out = _parse_pair_row(row, pp, obs_filter, ref_band_id)
+            if out is not None:
+                return out
+        for row in reversed(prow):
+            if (row.get("fits") or "").strip() == AGGREGATE_ROW_FITS_MARKER:
                 continue
-            try:
-                a = float(row["slope"])
-                b = float(row["intercept"])
-            except (KeyError, ValueError, TypeError):
-                continue
-            if not (np.isfinite(a) and np.isfinite(b)):
-                continue
-            ts = (row.get("timestamp_utc") or "")[:19]
-            rms = row.get("rms", "")
-            desc = f"{pp.name} @ {ts}, RMS={rms}"
-            mag_std = _parse_mag_std_from_row(row)
-            return (a, b, desc, mag_std)
+            out = _parse_pair_row(row, pp, obs_filter, ref_band_id)
+            if out is not None:
+                return out
 
     jp = journal_path or (transformation_storage_dir() / "coefficients_journal.csv")
     if not jp.is_file():
