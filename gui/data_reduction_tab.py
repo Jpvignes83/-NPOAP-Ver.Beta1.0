@@ -5,6 +5,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, Toplevel
 from pathlib import Path
 import os
+import json
+from datetime import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,6 +16,7 @@ from astropy.visualization import ZScaleInterval
 from scipy.ndimage import maximum_filter
 
 from core.image_processor import ImageProcessor, PipelineControl
+from core.ptc_analysis import analyze_ptc
 from core.transformation_coefficients import (
     REFERENCE_BAND_CHOICES,
     append_coefficient_record,
@@ -62,6 +65,9 @@ class CCDProcGUI:
         self._trans_intercept = None
         self._trans_rms = None
         self._trans_n_fit = None
+        self._ptc_result = None
+        self._ptc_flat_files = []
+        self._ptc_bias_files = []
         self.create_widgets()
         self._start_ui_queue_poller()
 
@@ -112,6 +118,12 @@ class CCDProcGUI:
 
         ttk.Button(
             calib_frame, text="🚀 Lancer Calibration", command=self.run_calibration, width=30
+        ).pack(pady=2, padx=5, fill="x")
+        ttk.Button(
+            calib_frame, text="📈 Analyse PTC (Gain/RN)", command=self.run_ptc_analysis, width=30
+        ).pack(pady=2, padx=5, fill="x")
+        ttk.Button(
+            calib_frame, text="💾 Export PTC", command=self.export_ptc_results, width=30
         ).pack(pady=2, padx=5, fill="x")
 
         # ============================================================
@@ -785,6 +797,183 @@ class CCDProcGUI:
         except Exception as e:
             self.log_message(f"❌ Erreur durant la calibration : {e}", "error")
             self.update_progress(0)
+
+    def run_ptc_analysis(self):
+        # Le flux PTC ne dépend pas du répertoire de travail: on sélectionne les fichiers à la demande.
+        picked = filedialog.askopenfilenames(
+            parent=self.frame,
+            title="Sélectionner les images FLAT pour la PTC",
+            filetypes=[("FITS files", "*.fits *.fit *.fts"), ("Tous", "*.*")],
+        )
+        if not picked:
+            return
+        flat_files = list(picked)
+        self._ptc_flat_files = list(flat_files)
+
+        use_bias = messagebox.askyesno(
+            "PTC",
+            "Voulez-vous sélectionner des BIAS maintenant ?\n"
+            "(Recommandé pour une PTC propre)",
+        )
+        bias_files = []
+        if use_bias:
+            picked_bias = filedialog.askopenfilenames(
+                parent=self.frame,
+                title="Sélectionner les images BIAS (optionnel)",
+                filetypes=[("FITS files", "*.fits *.fit *.fts"), ("Tous", "*.*")],
+            )
+            bias_files = list(picked_bias)
+        self._ptc_bias_files = list(bias_files)
+
+        self.progress_prefix = "📊 PTC :"
+        self.update_progress(0)
+        self.log_message(
+            f"📈 Lancement PTC : {len(flat_files)} flats, {len(bias_files)} bias."
+        )
+
+        threading.Thread(
+            target=self._ptc_task,
+            args=(flat_files, bias_files),
+            daemon=True,
+        ).start()
+
+    def _ptc_task(self, flat_files, bias_files):
+        try:
+            self.update_progress(20)
+            res = analyze_ptc(flat_files, bias_files, roi_fraction=0.5)
+            self._ptc_result = res
+            self.update_progress(100)
+            gain_txt = (
+                f"{res.gain_e_per_adu:.4f} e-/ADU"
+                if res.gain_e_per_adu is not None
+                else "indetermine"
+            )
+            rn_txt = (
+                f"{res.readnoise_e:.3f} e-"
+                if res.readnoise_e is not None
+                else "indetermine"
+            )
+            self.log_message(
+                f"✅ PTC terminee: points={res.total_points}, fit={res.used_points}, "
+                f"gain={gain_txt}, RN={rn_txt}, pente={res.slope:.6g}, intercept={res.intercept:.6g}"
+            )
+            self._call_on_ui_thread(self._show_ptc_plot)
+        except Exception as e:
+            self._call_on_ui_thread(self._showerror, "PTC", str(e))
+            self.log_message(f"❌ Erreur PTC : {e}", "error")
+            self.update_progress(0)
+
+    def _show_ptc_plot(self):
+        res = self._ptc_result
+        if res is None:
+            self._showwarning("PTC", "Aucun resultat PTC disponible.")
+            return
+
+        x = np.asarray(res.means_adu, dtype=float)
+        y = np.asarray(res.vars_adu2, dtype=float)
+        win = Toplevel(self.frame)
+        win.title("PTC (Variance vs Signal)")
+        win.geometry("760x560")
+
+        fig, ax = plt.subplots(figsize=(7.2, 5.2))
+        ax.scatter(x, y, s=22, alpha=0.75, label="Points PTC")
+        xx = np.linspace(float(np.nanmin(x)), float(np.nanmax(x)), 120)
+        yy = res.slope * xx + res.intercept
+        ax.plot(xx, yy, "r-", lw=2, label="Fit lineaire")
+        ax.set_xlabel("Signal moyen (ADU)")
+        ax.set_ylabel("Variance (ADU**2)")
+        title_gain = (
+            f"Gain={res.gain_e_per_adu:.4f} e-/ADU"
+            if res.gain_e_per_adu is not None
+            else "Gain=indetermine"
+        )
+        title_rn = (
+            f"RN={res.readnoise_e:.3f} e-"
+            if res.readnoise_e is not None
+            else "RN=indetermine"
+        )
+        ax.set_title(f"PTC - {title_gain}, {title_rn}")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas.draw()
+
+        def _close():
+            plt.close(fig)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _close)
+
+    def export_ptc_results(self):
+        res = self._ptc_result
+        if res is None:
+            self._showwarning("Export PTC", "Aucun resultat PTC a exporter.")
+            return
+
+        if self.output_dir:
+            out_dir = Path(self.output_dir) / "output" / "ptc"
+        else:
+            chosen = filedialog.askdirectory(
+                parent=self.frame,
+                title="Choisir un dossier pour exporter les resultats PTC",
+            )
+            if not chosen:
+                return
+            out_dir = Path(chosen)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = out_dir / f"ptc_points_{ts}.csv"
+        json_path = out_dir / f"ptc_summary_{ts}.json"
+        png_path = out_dir / f"ptc_plot_{ts}.png"
+
+        x = np.asarray(res.means_adu, dtype=float)
+        y = np.asarray(res.vars_adu2, dtype=float)
+        y_fit = res.slope * x + res.intercept
+
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            f.write("mean_adu,var_adu2,fit_var_adu2\n")
+            for xi, yi, yfi in zip(x, y, y_fit):
+                f.write(f"{xi:.10g},{yi:.10g},{yfi:.10g}\n")
+
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "gain_e_per_adu": res.gain_e_per_adu,
+            "readnoise_e": res.readnoise_e,
+            "slope": res.slope,
+            "intercept": res.intercept,
+            "used_points": res.used_points,
+            "total_points": res.total_points,
+            "flat_files": [str(p) for p in self._ptc_flat_files],
+            "bias_files": [str(p) for p in self._ptc_bias_files],
+            "csv_points": str(csv_path),
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=True)
+
+        fig, ax = plt.subplots(figsize=(7.2, 5.2))
+        ax.scatter(x, y, s=22, alpha=0.75, label="Points PTC")
+        xx = np.linspace(float(np.nanmin(x)), float(np.nanmax(x)), 120)
+        yy = res.slope * xx + res.intercept
+        ax.plot(xx, yy, "r-", lw=2, label="Fit lineaire")
+        ax.set_xlabel("Signal moyen (ADU)")
+        ax.set_ylabel("Variance (ADU**2)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+        ax.set_title("PTC export")
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=150)
+        plt.close(fig)
+
+        self.log_message(
+            f"💾 Export PTC: CSV={csv_path.name}, JSON={json_path.name}, PNG={png_path.name}"
+        )
+        self._showinfo(
+            "Export PTC",
+            f"Fichiers exportes dans:\n{out_dir}\n\n- {csv_path.name}\n- {json_path.name}\n- {png_path.name}",
+        )
 
     # ------------------------------------------------------------------
     # Astrométrie locale / NOVA
