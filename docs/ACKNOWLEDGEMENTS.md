@@ -152,6 +152,14 @@ NPOAP utilise de nombreuses bibliothèques et outils open-source de la communaut
 
 ## Services et catalogues externes
 
+## Remerciements spécifiques - Réduction / PTC
+
+- **N.I.N.A. (Nighttime Imaging 'N' Astronomy)** : logiciel d'acquisition utilisé par de nombreux utilisateurs NPOAP pour préparer des sequences flats/bias (dont les sequences PTC).  
+  Site : https://nighttime-imaging.eu/
+
+- **Méthode Photon Transfer Curve (PTC)** : la fonctionnalité PTC de l'onglet Réduction s'appuie sur la pratique standard de caractérisation des détecteurs CCD/CMOS (relation variance-signal).  
+  Référence historique courante : Janesick, *Photon Transfer* (SPIE Press).
+
 ### Catalogues astrométriques et photométriques
 - **Gaia DR3** : Catalogue astrométrique de l'Agence Spatiale Européenne (ESA)
   - Utilisé comme référence astrométrique et photométrique (https://www.cosmos.esa.int/web/gaia)

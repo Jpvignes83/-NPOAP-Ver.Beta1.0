@@ -15,6 +15,7 @@ Version 1.0 — *compléments avril 2026 : **Coefficient médian** (synthèse 2�
 2. [Accueil](#2-accueil)
 3. [Réduction de Données](#3-réduction-de-données)
    - [Coefficients de transformation (Réduction)](#coef-transformation-reduction)
+   - [Analyse PTC (Gain / Read Noise)](#ptc-reduction)
 4. [Photométrie Exoplanètes (HOPS intégré)](#4-photométrie-exoplanètes)
 5. [Photométrie Astéroïdes](#5-photométrie-astéroïdes)
    - [5.1 Astrométrie Zero-Aperture](#51-astrométrie-zero-aperture)
@@ -171,6 +172,40 @@ répertoire_de_travail/
 3. **Charger Darks** : Sélectionnez les fichiers contenant vos images de dark
 4. **Charger Flats** : Sélectionnez les fichiers contenant vos images de flat
 5. **Option — Scaler les darks** : Cochez **« Scaler les darks au temps d'exposition des lights (si différent) »** si le temps d'exposition de vos darks ne correspond pas exactement à celui des images science. NPOAP extrapolera alors le master dark en le multipliant par le rapport (temps d'exposition de la light / temps d'exposition des darks), comme dans AstroImageJ. Les en-têtes FITS doivent contenir **EXPTIME** (ou **EXPOSURE**) pour les lights et les darks.
+
+<a id="ptc-reduction"></a>
+#### Analyse PTC (Gain / Read Noise)
+
+Le bouton **📈 Analyse PTC (Gain/RN)** de l'onglet Réduction permet d'estimer le **gain** (e-/ADU) et le **bruit de lecture** (e-) a partir d'images de flats (et bias optionnels).
+
+Procédure :
+
+1. Cliquer **📈 Analyse PTC (Gain/RN)**.
+2. Sélectionner les **flats** (obligatoire).
+3. Sélectionner des **bias** (optionnel mais recommandé).
+4. NPOAP regroupe les flats par **EXPTIME**, forme des paires, calcule :
+   - signal moyen : mediane de `(F1 + F2) / 2` sur ROI centrale,
+   - variance : variance de `(F1 - F2) / sqrt(2)`.
+5. Une régression linéaire `variance = a * signal + b` est effectuée sur la zone centrale des points.
+6. Résultats affichés dans le journal et sur la figure :
+   - `Gain = 1 / a` (e-/ADU),
+   - `Read Noise = Gain * sqrt(b)` (e-), si `b > 0`.
+
+Export :
+
+- Le bouton **💾 Export PTC** enregistre automatiquement :
+  - `ptc_points_*.csv` (points et valeur de fit),
+  - `ptc_summary_*.json` (gain, RN, pente, intercept, nombre de points, fichiers utilisés),
+  - `ptc_plot_*.png` (graphique).
+- Dossier de sortie :
+  - si un répertoire de travail est défini : `output/ptc/`,
+  - sinon : un dossier d'export est demandé.
+
+Bonnes pratiques :
+
+- conserver **gain / offset / binning** constants pendant la séquence,
+- éviter la saturation et couvrir plusieurs niveaux de signal,
+- fournir des paires de flats pour chaque temps d'exposition.
 
 #### Sécurités avant calibration
 
