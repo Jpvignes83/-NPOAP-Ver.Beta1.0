@@ -5,11 +5,11 @@ from pathlib import Path
 # Observatoire (valeurs par défaut – modifiables via HomeTab)
 # ──────────────────────────────────────────────────────────────
 OBSERVATORY = {
-    "name": "Deep Sky Chile",
-    "lat": -30.52,   
-    "lon": -70.82,
-    "elev": 1710.0,     # mètres
-    "timezone": "Santiago, Chili",
+    "name": "",
+    "lat": ,   
+    "lon": ,
+    "elev": ,     # mètres
+    "timezone": "",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -40,27 +40,17 @@ PHOTOMETRY_DEFAULTS = {
 # Commande Python sous WSL pour exécuter scripts/kbmod_wsl_detect.py.
 # Par défaut "python3" (Python par défaut dans le PATH WSL).
 # Si vous avez installé KBMOD dans un env conda/venv, indiquez le chemin complet
-# dans WSL, ex: "/home/docke/miniconda3/bin/python3" ou "/home/docke/miniconda3/envs/kbmod/bin/python3"
-KBMOD_WSL_PYTHON = "/home/docke/miniconda3/envs/astroenv/bin/python3"
+# dans WSL, ex: "/home/user/miniconda3/bin/python3" ou "/home/user/miniconda3/envs/kbmod/bin/python3"
+KBMOD_WSL_PYTHON = "/home/user/miniconda3/envs/astroenv/bin/python3"
 
 # ──────────────────────────────────────────────────────────────
 # Astrometry.net (clé API locale)
 # ──────────────────────────────────────────────────────────────
 ASTROMETRY_API_KEY_FILE = Path.home() / ".astrometry_api_key"
 
-# ──────────────────────────────────────────────────────────────
-# Watney Astrometry (CLI natif Windows)
-# ──────────────────────────────────────────────────────────────
-# Chemin vers l'exécutable Watney CLI (None = cherche dans PATH)
-# Modifiez ces chemins selon votre installation
-WATNEY_SOLVE_EXE = Path("C:/watney/watney-solve.exe") if Path("C:/watney/watney-solve.exe").exists() else None
-WATNEY_QUAD_DB_PATH = Path("C:/watney/db") if Path("C:/watney/db").exists() else None
-# Note: WATNEY_API_URL et WATNEY_API_PORT sont conservés pour compatibilité avec le démarrage automatique du service
-WATNEY_API_URL = "http://localhost:5000"  # URL du service (si utilisation API REST)
-WATNEY_API_PORT = 5000  # Port par défaut du service Watney (si utilisation API REST)
 
 EQUIPMENT_OBSERVATION = {
-    "obs_code": "VJEB",           # Code observateur AAVSO (5 caractères max)
+    "obs_code": "",           # Code observateur AAVSO (5 caractères max)
     "camera": "CCD",             # Nom de la caméra
     "binning": "1x1",         # Binning (1x1, 2x2, 3x3, 4x4)
     "delim": "tab",             # Délimiteur pour rapports (, ; | : ! / ? ou tab)
@@ -81,7 +71,7 @@ AFFILIATIONS = []  # Liste de dicts: [{"text": "...", "selected": bool}]
 # Astro-COLIBRI (recherche transitoires, cone search)
 # UID optionnel : inscription gratuite sur astro-colibri.com, 100 req/jour
 # ──────────────────────────────────────────────────────────────
-ASTRO_COLIBRI_UID = 'WRwmrDmXDQc6yUVCCQSUBD63gtk2'
+ASTRO_COLIBRI_UID = ''
 
 # ──────────────────────────────────────────────────────────────
 # TNS (Transient Name Server) API Configuration
