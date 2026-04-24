@@ -267,6 +267,71 @@ def _check_filter_consistency(science_files, flat_files) -> str | None:
     return None
 
 
+def _gain_readnoise_electrons(header) -> tuple[float, float]:
+    """Gain (e⁻/ADU) et bruit de lecture (e⁻/pixel) depuis l'en-tête FITS."""
+    g = header.get("GAIN", header.get("EGAIN", 1.0))
+    try:
+        gain = float(g) if g is not None else 1.0
+    except (TypeError, ValueError):
+        gain = 1.0
+    gain = max(gain, 1e-6)
+    rn = header.get("RDNOISE", header.get("READNOIS", header.get("READNOISE", 0.0)))
+    try:
+        readnoise = float(rn) if rn is not None else 0.0
+    except (TypeError, ValueError):
+        readnoise = 0.0
+    readnoise = max(readnoise, 0.0)
+    return gain, readnoise
+
+
+def _variance_poisson_readnoise_adu(
+    data_adu: np.ndarray, gain: float, readnoise_e: float
+) -> np.ndarray:
+    """
+    Variance (ADU**2) modèle Poisson + bruit de lecture : max(I,0)/G + (RN_e/G)**2.
+    ``readnoise_e`` en électrons par pixel (convention FITS courante).
+    """
+    g = max(float(gain), 1e-6)
+    rn_adu = max(float(readnoise_e), 0.0) / g
+    d = np.asarray(data_adu, dtype=float)
+    return np.maximum(d, 0.0) / g + rn_adu**2
+
+
+def _stack_median_and_variance(stack: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Médiane et variance d'échantillon (ddof=1) par pixel sur une pile 2D.
+    Une seule image → variance nulle.
+    """
+    if not stack:
+        raise ValueError("stack vide")
+    arr = np.stack(stack, axis=0).astype(float)
+    med = np.median(arr, axis=0)
+    if arr.shape[0] < 2:
+        var = np.zeros_like(med, dtype=float)
+    else:
+        var = np.var(arr, axis=0, ddof=1)
+    return med, var
+
+
+def _write_calibrated_with_variance(
+    out_path: Path,
+    data: np.ndarray,
+    variance: np.ndarray,
+    header: fits.Header,
+) -> None:
+    """Écrit image calibrée (HDU0) + carte de variance par pixel (HDU1 ``VARIANCE``)."""
+    data = np.asarray(data, dtype=np.float32)
+    variance = np.asarray(variance, dtype=np.float32)
+    variance = np.clip(variance, 0.0, np.finfo(np.float32).max)
+    phdu = fits.PrimaryHDU(data=data, header=header)
+    vhdr = fits.Header()
+    vhdr["EXTNAME"] = "VARIANCE"
+    vhdr["BUNIT"] = ("ADU**2", "Variance (science units squared)")
+    vhdr["COMMENT"] = "Variance ADU**2 (Poisson+RN + masters + division flat, numpy)"
+    ihdu = fits.ImageHDU(data=variance, header=vhdr)
+    fits.HDUList([phdu, ihdu]).writeto(str(out_path), overwrite=True)
+
+
 class ImageProcessor:
     def __init__(self, base_dir: str | Path, bash_path: str | None = None):
         self.base_dir = Path(base_dir)
@@ -307,6 +372,11 @@ class ImageProcessor:
         Calibration bias/dark/flat avec contrôles de cohérence (binning, filtre)
         et option de scaling des darks au temps d'exposition des lights (type AstroImageJ).
 
+        Réduction **numpy** (médiane des masters, soustractions / division comme avant).
+        Carte de variance par pixel (HDU1 ``VARIANCE``, ADU**2) : Poisson + bruit de
+        lecture (en-tête GAIN / RDNOISE), variance d'empilement des masters, puis
+        propagation pour soustraction du dark scalé et division par le flat.
+
         Returns
         -------
         str | None
@@ -332,45 +402,6 @@ class ImageProcessor:
         if progress_callback:
             progress_callback(0)
 
-        # ─── Helpers ─────────────────────────────────────────────────────
-        def build_master(files, bias=None, dark=None, dark_exptime_ref=0.0, scale_dark_by_exptime=False):
-            stack = []
-            for f in files:
-                try:
-                    data = fits.getdata(f, 0).astype(float)
-                    hdr = fits.getheader(f, 0)
-                    if bias is not None:
-                        data -= bias
-                    if dark is not None:
-                        dark_to_subtract = dark
-                        if scale_dark_by_exptime and dark_exptime_ref > 0:
-                            frame_exptime = _get_exptime(hdr)
-                            if frame_exptime > 0:
-                                dark_to_subtract = dark * (frame_exptime / dark_exptime_ref)
-                            else:
-                                logger.warning(
-                                    f"{Path(f).name} : EXPTIME absent/nul, dark non scalé pour construction master."
-                                )
-                        data -= dark_to_subtract
-                    stack.append(data)
-                except Exception as e:
-                    logging.error(f"Erreur lecture {f}: {e}")
-            return np.median(np.array(stack, dtype=float), axis=0) if stack else None
-
-        def _dark_exptime(files):
-            """Temps d'exposition des darks (médiane des EXPTIME)."""
-            if not files:
-                return 0.0
-            times = []
-            for f in files:
-                try:
-                    t = _get_exptime(fits.getheader(f, 0))
-                    if t > 0:
-                        times.append(t)
-                except Exception:
-                    pass
-            return float(np.median(times)) if times else 0.0
-
         def _parse_date_obs(date_str):
             date_str = str(date_str).strip()
             if not date_str:
@@ -378,21 +409,68 @@ class ImageProcessor:
             for fmt in ("isot", "fits"):
                 try:
                     return Time(date_str, format=fmt, scale="utc")
-                except:
+                except Exception:
                     continue
             logging.error(f"DATE-OBS illisible : {date_str}")
             return None
 
-        # ─── Création des masters ───────────────────────────────────────
-        master_bias = build_master(bias_files)
-        master_dark = build_master(dark_files, bias=master_bias)
-        dark_exptime = _dark_exptime(dark_files) if dark_files else 0.0
-        if scale_darks and master_dark is not None and dark_exptime <= 0:
-            logging.warning("Scale darks activé mais EXPTIME des darks introuvable ; scaling désactivé pour les darks.")
+        def _dark_exptime_paths(files):
+            if not files:
+                return 0.0
+            times = []
+            for fp in files:
+                try:
+                    t = _get_exptime(fits.getheader(fp, 0))
+                    if t > 0:
+                        times.append(t)
+                except Exception:
+                    pass
+            return float(np.median(times)) if times else 0.0
+
+        def build_master_stack(
+            files, bias=None, dark=None, dark_exptime_ref=0.0, scale_dark_by_exptime=False
+        ):
+            """Retourne (médiane, variance d'échantillon par pixel) ou (None, None)."""
+            stack = []
+            for fp in files:
+                try:
+                    data = fits.getdata(fp, 0).astype(float)
+                    h = fits.getheader(fp, 0)
+                    if bias is not None:
+                        data = data - bias
+                    if dark is not None:
+                        dark_to_subtract = dark
+                        if scale_dark_by_exptime and dark_exptime_ref > 0:
+                            frame_exptime = _get_exptime(h)
+                            if frame_exptime > 0:
+                                dark_to_subtract = dark * (frame_exptime / dark_exptime_ref)
+                            else:
+                                logger.warning(
+                                    "%s : EXPTIME absent/nul, dark non scalé pour construction master.",
+                                    Path(fp).name,
+                                )
+                        data = data - dark_to_subtract
+                    stack.append(data)
+                except Exception as e:
+                    logging.error("Erreur lecture %s : %s", fp, e)
+            if not stack:
+                return None, None
+            return _stack_median_and_variance(stack)
+
+        dark_exptime = _dark_exptime_paths(dark_files) if dark_files else 0.0
+        if scale_darks and dark_files and dark_exptime <= 0:
+            logging.warning(
+                "Scale darks activé mais EXPTIME des darks introuvable ; scaling désactivé pour les darks."
+            )
             scale_darks = False
         if scale_darks and dark_exptime > 0:
-            logger.info(f"Scaling des darks activé (temps de référence dark : {dark_exptime:.2f} s).")
-        master_flat = build_master(
+            logger.info("Scaling des darks activé (temps de référence dark : %.2f s).", dark_exptime)
+
+        master_bias, master_bias_var = build_master_stack(bias_files)
+        master_dark, master_dark_var = build_master_stack(
+            dark_files, bias=master_bias, dark=None
+        )
+        master_flat, master_flat_var = build_master_stack(
             flat_files,
             bias=master_bias,
             dark=master_dark,
@@ -403,9 +481,10 @@ class ImageProcessor:
         if master_flat is not None:
             mean_flat = np.mean(master_flat[master_flat > 0])
             if mean_flat > 0:
-                master_flat /= mean_flat
+                master_flat = master_flat / mean_flat
+                if master_flat_var is not None:
+                    master_flat_var = master_flat_var / (mean_flat**2)
 
-        # Sauvegarde des masters avec en-tête FITS minimal (binning, date, EXPTIME) pour réutilisation
         try:
             if master_bias is not None and bias_files:
                 hdr_bias = _build_master_header(
@@ -425,54 +504,69 @@ class ImageProcessor:
         except Exception as e:
             logging.warning(f"Erreur sauvegarde masters : {e}")
 
-        # ─── Traitement image par image ─────────────────────────────────
         total = len(science_files)
         failed_files = []
+        eps = 1e-12
         for i, f in enumerate(science_files, 1):
             try:
                 data = fits.getdata(f, 0).astype(float)
                 hdr = fits.getheader(f, 0)
+                gain, rn_e = _gain_readnoise_electrons(hdr)
+                var = _variance_poisson_readnoise_adu(data, gain, rn_e)
 
-                # Calibration classique
                 if master_bias is not None:
-                    data -= master_bias
+                    data = data - master_bias
+                    if master_bias_var is not None:
+                        var = var + master_bias_var
                 if master_dark is not None:
                     if scale_darks and dark_exptime > 0:
                         science_exptime = _get_exptime(hdr)
                         if science_exptime > 0:
                             scale = science_exptime / dark_exptime
-                            data -= master_dark * scale
+                            data = data - master_dark * scale
+                            if master_dark_var is not None:
+                                var = var + (scale**2) * master_dark_var
                         else:
-                            data -= master_dark
+                            data = data - master_dark
                             logging.warning(f"{f.name} : EXPTIME absent ou nul, dark non scalé.")
+                            if master_dark_var is not None:
+                                var = var + master_dark_var
                     else:
-                        data -= master_dark
+                        data = data - master_dark
+                        if master_dark_var is not None:
+                            var = var + master_dark_var
                 if master_flat is not None:
-                    mask = master_flat != 0
-                    data[mask] /= master_flat[mask]
+                    T = data.astype(float)
+                    var_T = var.astype(float)
+                    F = master_flat.astype(float)
+                    Vf = (
+                        master_flat_var.astype(float)
+                        if master_flat_var is not None
+                        else np.zeros_like(F)
+                    )
+                    mask = F != 0
+                    data = data.copy()
+                    data[mask] = T[mask] / F[mask]
+                    rel = var_T / (T * T + eps) + Vf / (F * F + eps)
+                    var_out = var_T.copy()
+                    var_out[mask] = (data[mask] ** 2) * rel[mask]
+                    var = var_out
 
-                hdr["HISTORY"] = "Calibrated (bias/dark/flat) by ImageProcessor"
+                hdr["HISTORY"] = (
+                    "Calibrated (bias/dark/flat + VARIANCE HDU, numpy) by ImageProcessor"
+                )
 
-                # ──────── JD-UTC + BJD-TDB ─────────────────────────────────────
                 date_obs_str = hdr.get("DATE-OBS")
-
                 if date_obs_str:
                     date_obs = _parse_date_obs(date_obs_str)
-
                     if date_obs:
                         exptime = float(hdr.get("EXPTIME", 0))
-
-                        # ---- Création UTC midpoint AVEC localisation (future-proof Astropy)
                         midpoint = Time(
                             date_obs.utc + (exptime / 2.0) * u.s,
                             scale="utc",
-                            location=self.location
+                            location=self.location,
                         )
-
-                        # ---- JD-UTC ----
                         hdr["JD-UTC"] = (midpoint.jd, "Julian Date (UTC) at mid-exposure")
-
-                        # ---- Parsing RA/DEC ----
                         target = None
                         try:
                             ra_str = hdr.get("OBJCTRA")
@@ -482,39 +576,28 @@ class ImageProcessor:
                                     ra_str,
                                     dec_str,
                                     unit=(u.hourangle, u.deg),
-                                    frame="icrs"
+                                    frame="icrs",
                                 )
                         except Exception as e:
                             logging.debug(f"{f.name} : erreur parsing RA/DEC : {e}")
-
-                        # ---- Calcul du BJD-TDB ----
                         if target:
                             try:
-                                # Conversion du temps en TDB (avec localisation déjà incluse)
                                 midpoint_tdb = midpoint.tdb
-
-                                # Correction barycentrique (LTT)
                                 with solar_system_ephemeris.set("builtin"):
                                     ltt = midpoint_tdb.light_travel_time(target)
-
                                 bjd_tdb = midpoint_tdb + ltt
-
-                                # Stockage en JD : format correct pour BJD-TDB FITS
                                 hdr["BJD-TDB"] = (bjd_tdb.jd, "Barycentric Julian Date (TDB)")
-
                             except Exception as e_bjd:
                                 logging.warning(f"Échec calcul BJD-TDB pour {f.name}: {e_bjd}")
 
-                # ─── Sauvegarde image calibrée ─────────────────────────────────
                 out_path = self.calibrated_dir / f.name
-                fits.writeto(out_path, data, hdr, overwrite=True)
-                logging.info(f"Image calibrée : {out_path}")
+                _write_calibrated_with_variance(out_path, data, var, hdr)
+                logging.info("Image calibrée + VARIANCE : %s", out_path)
 
             except Exception as e:
                 logging.error(f"Erreur calibration {f.name} : {e}")
                 failed_files.append(f.name)
 
-            # Progression
             if progress_callback:
                 progress_callback(min(100, int(i / total * 100)))
 
