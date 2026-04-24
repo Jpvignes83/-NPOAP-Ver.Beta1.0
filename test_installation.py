@@ -308,6 +308,7 @@ def main():
         ('emcee', True),
         ('specutils', True),
         ('statsmodels', True),
+        ('pylightcurve', True),
     ]
     
     for module_info in core_modules:
@@ -343,7 +344,6 @@ def main():
         ('phoebe', False, "Étoiles binaires (PHOEBE2)"),
         ('rebound', False, "Simulation N-body"),
         ('ultranest', False, "Nested sampling bayésien"),
-        ('pylightcurve', False, "Modélisation de courbes de lumière d'exoplanètes"),
     ]
     
     for module_info in optional_modules:

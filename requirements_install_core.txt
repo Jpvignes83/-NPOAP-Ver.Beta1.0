@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # NPOAP — Dépendances installées par installation.bat (PyPI uniquement, sans Git).
 #
-# Exclut volontairement : ezpadova (git+https), PHOEBE, pylightcurve, rebound, ultranest,
+# Exclut volontairement : ezpadova (git+https), PHOEBE, rebound, ultranest,
 # lightkurve, synphot, stdpipe, chaîne Prospector, sncosmo/iminuit, kbmod, CuPy.
 #
 # Installation complète (toutes les lignes de requirements.txt, dont git+) :
@@ -30,6 +30,7 @@ specutils>=1.12.0
 h5py>=3.0.0
 click>=8.0.0
 reportlab>=3.6.0
+pylightcurve>=4.0.0
 wotan>=1.9
 exotethys>=1.0.0
 sora-astro>=0.3.2

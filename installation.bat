@@ -245,7 +245,7 @@ if not defined SKIP_CONDA (
     echo Telechargement de Miniconda...
     set CONDA_URL=https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe
     set "CONDA_INSTALLER=%TEMP%\Miniconda3-latest-Windows-x86_64.exe"
-    if exist "%CONDA_INSTALLER%" del /f /q "%CONDA_INSTALLER%" >nul 2>&1
+    if exist "!CONDA_INSTALLER!" del /f /q "!CONDA_INSTALLER!" >nul 2>&1
     
     REM Plusieurs methodes : BITS (sortie native Windows^), PowerShell + console, curl
     set "DL_OK=0"
@@ -256,18 +256,18 @@ if not defined SKIP_CONDA (
     if !errorLevel! equ 0 (
         call set "BITSJOB=NPOAPmc%%RANDOM%%%%RANDOM%%"
         echo Methode A : BITS ^(bitsadmin^) - lignes de progression Windows...
-        bitsadmin /transfer !BITSJOB! /download /priority NORMAL "%CONDA_URL%" "%CONDA_INSTALLER%"
-        if !errorLevel! equ 0 if exist "%CONDA_INSTALLER%" set "DL_OK=1"
+        bitsadmin /transfer !BITSJOB! /download /priority NORMAL "!CONDA_URL!" "!CONDA_INSTALLER!"
+        if !errorLevel! equ 0 if exist "!CONDA_INSTALLER!" set "DL_OK=1"
     )
     set "MCDLPS1=%~dp0installation_miniconda_download.ps1"
     if "!DL_OK!"=="0" if exist "!MCDLPS1!" (
         echo Methode B : PowerShell - barre ASCII + sortie rattachee a cette fenetre...
         if exist "!PSFULL!" (
-            "!PSFULL!" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!MCDLPS1!" -Url "%CONDA_URL%" -Out "%CONDA_INSTALLER%"
+            "!PSFULL!" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!MCDLPS1!" -Url "!CONDA_URL!" -Out "!CONDA_INSTALLER!"
         ) else (
-            powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!MCDLPS1!" -Url "%CONDA_URL%" -Out "%CONDA_INSTALLER%"
+            powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!MCDLPS1!" -Url "!CONDA_URL!" -Out "!CONDA_INSTALLER!"
         )
-        if !errorLevel! equ 0 if exist "%CONDA_INSTALLER%" set "DL_OK=1"
+        if !errorLevel! equ 0 if exist "!CONDA_INSTALLER!" set "DL_OK=1"
     )
     if "!DL_OK!"=="0" if not exist "!MCDLPS1!" (
         echo %YELLOW%installation_miniconda_download.ps1 absent du dossier du .bat - methodes A/C seulement.%RESET%
@@ -276,13 +276,13 @@ if not defined SKIP_CONDA (
         where curl >nul 2>&1
         if !errorLevel! equ 0 (
             echo Methode C : curl - barre sur stderr puis console...
-            curl.exe --progress-bar -fSL --retry 3 --connect-timeout 30 -o "%CONDA_INSTALLER%" "%CONDA_URL%"
-            if !errorLevel! equ 0 if exist "%CONDA_INSTALLER%" set "DL_OK=1"
+            curl.exe --progress-bar -fSL --retry 3 --connect-timeout 30 -o "!CONDA_INSTALLER!" "!CONDA_URL!"
+            if !errorLevel! equ 0 if exist "!CONDA_INSTALLER!" set "DL_OK=1"
         )
     )
-    if not exist "%CONDA_INSTALLER%" set "DL_OK=0"
+    if not exist "!CONDA_INSTALLER!" set "DL_OK=0"
     REM Eviter les echecs silencieux (page HTML, fichier vide ; Miniconda fait typiquement ~80 Mo)
-    if exist "%CONDA_INSTALLER%" for %%S in ("%CONDA_INSTALLER%") do (
+    if exist "!CONDA_INSTALLER!" for %%S in ("!CONDA_INSTALLER!") do (
         if %%~zS equ 0 set "DL_OK=0"
         if %%~zS LSS 5000000 (
             echo %RED%Le fichier telecharge est trop petit (%%~zS octets^) - echec probable du telechargement.%RESET%
@@ -290,10 +290,10 @@ if not defined SKIP_CONDA (
         )
     )
     if "!DL_OK!"=="0" (
-        if exist "%CONDA_INSTALLER%" del /f /q "%CONDA_INSTALLER%" >nul 2>&1
+        if exist "!CONDA_INSTALLER!" del /f /q "!CONDA_INSTALLER!" >nul 2>&1
         echo %RED%ERREUR: Echec du telechargement de Miniconda.%RESET%
         echo Verifiez la connexion Internet, le proxy, ou telechargez l'installateur a la main depuis:
-        echo   %CONDA_URL%
+        echo   !CONDA_URL!
         pause
         exit /b 1
     )
@@ -302,11 +302,11 @@ if not defined SKIP_CONDA (
     echo %YELLOW%Ne fermez pas cette fenetre : cela peut prendre plusieurs minutes.%RESET%
     echo.
     REM NSIS: l'option /D= doit etre en DERNIER. AllUsers -^> emplacement courant ProgramData.
-    "%CONDA_INSTALLER%" /InstallationType=AllUsers /RegisterPython=1 /AddToPath=1 /S /D=%ProgramData%\Miniconda3
+    "!CONDA_INSTALLER!" /InstallationType=AllUsers /RegisterPython=1 /AddToPath=1 /S /D=%ProgramData%\Miniconda3
     
-    del /f /q "%CONDA_INSTALLER%" >nul 2>&1
+    del /f /q "!CONDA_INSTALLER!" >nul 2>&1
     
-    timeout /t 3 /nobreak >nul
+    "%SystemRoot%\System32\timeout.exe" /t 3 /nobreak >nul
     for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "PATH=%%B"
     
     set "CONDA_EXE_OK=0"
