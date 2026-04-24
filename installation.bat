@@ -298,15 +298,33 @@ if not defined SKIP_CONDA (
         exit /b 1
     )
     
-    echo Installation de Miniconda en cours...
-    echo %YELLOW%Ne fermez pas cette fenetre : cela peut prendre plusieurs minutes.%RESET%
-    echo.
-    REM NSIS: l'option /D= doit etre en DERNIER. AllUsers -^> emplacement courant ProgramData.
-    "!CONDA_INSTALLER!" /InstallationType=AllUsers /RegisterPython=1 /AddToPath=1 /S /D=%ProgramData%\Miniconda3
-    
-    del /f /q "!CONDA_INSTALLER!" >nul 2>&1
-    
-    "%SystemRoot%\System32\timeout.exe" /t 3 /nobreak >nul
+    set "NSIS_RAN=0"
+    set "NSIS_ERR=0"
+    set "OFFER_CONDA_BASE_UPDATE=0"
+    REM L'installateur NSIS AllUsers refuse un dossier deja rempli : eviter l'echec et le faux "succes".
+    if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" (
+        set "OFFER_CONDA_BASE_UPDATE=1"
+        echo %YELLOW%Un Miniconda ^(tous utilisateurs^) est deja present :%RESET%
+        echo   %ProgramData%\Miniconda3
+        echo L'installateur silencieux ne peut pas reinstaller par-dessus ^(dossier non vide^).
+        echo Desinstallation complete ^(Applications Windows^) : seulement si vous voulez tout refaire a zero.
+        echo Sinon : apres l'etape des CGU des canaux, le script proposera une mise a jour de conda ^(environnement base^).
+        echo.
+        del /f /q "!CONDA_INSTALLER!" >nul 2>&1
+    ) else (
+        echo Installation de Miniconda en cours...
+        echo %YELLOW%Ne fermez pas cette fenetre : cela peut prendre plusieurs minutes.%RESET%
+        echo.
+        echo %GREEN%Note:%RESET% Avec /InstallationType=AllUsers, /AddToPath=1 est ignore ^(comportement Anaconda^).
+        echo.
+        REM NSIS: l'option /D= doit etre en DERNIER. AllUsers -^> emplacement courant ProgramData.
+        set "NSIS_RAN=1"
+        "!CONDA_INSTALLER!" /InstallationType=AllUsers /RegisterPython=1 /S /D=%ProgramData%\Miniconda3
+        set "NSIS_ERR=!errorLevel!"
+        del /f /q "!CONDA_INSTALLER!" >nul 2>&1
+        "%SystemRoot%\System32\timeout.exe" /t 3 /nobreak >nul
+    )
+    if "!NSIS_RAN!"=="1" if not "!NSIS_ERR!"=="0" if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" set "OFFER_CONDA_BASE_UPDATE=1"
     for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "PATH=%%B"
     
     set "CONDA_EXE_OK=0"
@@ -314,9 +332,22 @@ if not defined SKIP_CONDA (
     if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" set "CONDA_EXE_OK=1"
     if "!CONDA_EXE_OK!"=="0" (
         echo %RED%ERREUR: Miniconda ne semble pas installe (conda.exe introuvable^).%RESET%
+        if "!NSIS_RAN!"=="1" if not "!NSIS_ERR!"=="0" (
+            echo L'installateur a peut-etre echoue ^(ex. ::error:: dossier non vide, droits^). Supprimez ou videz
+            echo manuellement %ProgramData%\Miniconda3 en administrateur si besoin, ou desinstallez l'ancienne Miniconda.
+        )
         echo Installez a la main en administrateur ou relancez le script.
         pause
         exit /b 1
+    )
+    if "!NSIS_RAN!"=="1" if not "!NSIS_ERR!"=="0" (
+        echo %YELLOW%ATTENTION: L'installateur Miniconda a signale un echec ^(code !NSIS_ERR!^).%RESET%
+        if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" (
+            echo Une installation dans ProgramData est neanmoins detectee - le script continue avec celle-ci.
+        ) else if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" (
+            echo Conda est disponible depuis le profil utilisateur - le script continue.
+        )
+        echo.
     )
     
     if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" set "PATH=%ProgramData%\Miniconda3;%ProgramData%\Miniconda3\Scripts;%ProgramData%\Miniconda3\Library\bin;%PATH%"
@@ -327,7 +358,14 @@ if not defined SKIP_CONDA (
     
     conda --version >nul 2>&1
     if !errorLevel! equ 0 (
-        echo %GREEN%Miniconda installe avec succes!%RESET%
+        if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" if "!NSIS_RAN!"=="0" (
+            echo %GREEN%Conda : installation existante dans ProgramData conservee.%RESET%
+        ) else if "!NSIS_RAN!"=="1" if "!NSIS_ERR!"=="0" (
+            echo %GREEN%Miniconda installe avec succes!%RESET%
+        ) else (
+            echo %GREEN%Conda utilisable ^(version ci-dessous^).%RESET%
+        )
+        conda --version
     ) else (
         echo %YELLOW%ATTENTION: Conda n'est pas encore dans le PATH de cette session.%RESET%
         echo Reessayez: fermez cette fenetre puis relancez installation.bat.
@@ -360,6 +398,29 @@ call conda tos accept --override-channels --channel https://repo.anaconda.com/pk
 call conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>nul
 call conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 2>nul
 echo.
+
+REM Mise a jour de conda dans "base" sans reinstaller l'installateur .exe (dossier deja rempli, etc.)
+if "!OFFER_CONDA_BASE_UPDATE!"=="1" (
+    echo %BLUE%--- Mise a jour optionnelle : environnement de base Conda ---%RESET%
+    echo Met a jour l'outil %GREEN%conda%RESET% et les paquets du noyau ^(environnement %GREEN%base%RESET%^), sans reinstaller Miniconda.
+    set "DUCMD="
+    set /p DUCMD="Lancer : conda update -n base -c defaults conda -y ? (O/N) : "
+    if /i "!DUCMD!"=="O" (
+        echo.
+        "%CONDA_INST_ROOT%\Scripts\conda.exe" update -n base -c defaults conda -y
+        if !errorLevel! neq 0 (
+            echo %YELLOW%conda update a echoue. Essayez en administrateur, ou en ligne de commande :%RESET%
+            echo   call "%CONDA_INST_ROOT%\Scripts\activate.bat" base
+            echo   conda update -n base -c defaults conda
+        ) else (
+            echo %GREEN%Mise a jour de conda ^(base^) terminee.%RESET%
+        )
+        echo.
+    ) else (
+        echo Mise a jour de base ignoree. Pour la faire plus tard : conda activate base ^& conda update -n base -c defaults conda
+        echo.
+    )
+)
 
 REM ===================================================================
 REM ETAPE 5: Création de l'environnement Conda
