@@ -2,6 +2,7 @@
 """Détrendage lent pour courbes de lumière d'astéroïdes (séries longues, extinction, etc.)."""
 from __future__ import annotations
 
+import importlib.util
 from typing import Optional, Tuple
 
 import numpy as np
@@ -193,13 +194,13 @@ def list_detrend_methods() -> Tuple[Tuple[str, str], ...]:
         ("poly3", "Polynôme degré 3"),
         ("savgol", "Savitzky–Golay (lissage)"),
     )
-    try:
-        import wotan  # noqa: F401
-
+    # Ne pas « import wotan » ici : au premier chargement cela tire numba/llvmlite et peut
+    # bloquer l’UI 30–120 s sans log. On teste seulement la présence du paquet ; l’import
+    # réel a lieu dans _wotan_detrend quand l’utilisateur applique un détrendage Wōtan.
+    if importlib.util.find_spec("wotan") is not None:
         extra = (
             ("wotan_biweight", "Wōtan biweight"),
             ("wotan_median", "Wōtan median"),
         )
         return base + extra
-    except ImportError:
-        return base
+    return base
