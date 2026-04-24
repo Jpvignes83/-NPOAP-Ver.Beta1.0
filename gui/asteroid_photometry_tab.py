@@ -82,12 +82,20 @@ except Exception:
     cp = None
 # Détection KBMOD : exécutée via WSL (pas d'import kbmod sous Windows)
 from utils.wsl_utils import windows_path_to_wsl
-from core.periodogram_tools import run_lomb_scargle
-from core.asteroid_lightcurve_model import (
-    fit_harmonic_series_wls,
-    fit_light_curve,
-    light_curve_model,
-)
+try:
+    from core.periodogram_tools import run_lomb_scargle
+except ImportError:
+    run_lomb_scargle = None
+try:
+    from core.asteroid_lightcurve_model import (
+        fit_harmonic_series_wls,
+        fit_light_curve,
+        light_curve_model,
+    )
+except ImportError:
+    fit_harmonic_series_wls = None
+    fit_light_curve = None
+    light_curve_model = None
 from core.asteroid_shape_model import load_shape
 from core.transformation_coefficients import (
     load_latest_transformation_coefficient,
@@ -115,6 +123,18 @@ from core.asteroid_lc_detrend import detrend_asteroid_lc, list_detrend_methods
 # --- CONFIGURATION ---
 warnings.filterwarnings("ignore", category=AstropyWarning)
 logger = logging.getLogger("AsteroidPhotometryTab")
+if run_lomb_scargle is None:
+    logger.warning(
+        "core.periodogram_tools introuvable (fichier manquant dans l'installation ?) — Lomb-Scargle indisponible."
+    )
+if (
+    fit_harmonic_series_wls is None
+    or fit_light_curve is None
+    or light_curve_model is None
+):
+    logger.warning(
+        "core.asteroid_lightcurve_model incomplet ou trop ancien — remplacez core/asteroid_lightcurve_model.py par la version des sources NPOAP."
+    )
 Vizier.server = 'http://vizier.cfa.harvard.edu/'
 
 # =============================================================================
@@ -506,6 +526,10 @@ class AsteroidPhotometryTab:
 
         # Cache Gaia persistant
         self.gaia_cache = GaiaCache()
+        logger.info(
+            "Photométrie astéroïdes : construction de l'interface (onglets + graphiques LC) — "
+            "le premier affichage peut prendre quelques secondes."
+        )
 
         # Variables Tkinter (Synchronisées avec votre demande)
         self.asteroid_id_var = tk.StringVar(value="")
@@ -1029,6 +1053,7 @@ class AsteroidPhotometryTab:
         ttk.Button(toolbar_btns, text="Zoom", command=self.toolbar.zoom, width=7).pack(side=tk.LEFT, padx=2, pady=1)
         ttk.Button(toolbar_btns, text="Sauver", command=self.toolbar.save_figure, width=8).pack(side=tk.LEFT, padx=2, pady=1)
         self.canvas.mpl_connect("button_press_event", self.on_image_click)
+        logger.info("Photométrie astéroïdes : interface prête.")
 
     def _start_process_log_capture(self, process_label: str):
         """Réservé (ancien journal intégré supprimé) ; les logs restent via le logger standard."""
@@ -5962,6 +5987,10 @@ class AsteroidPhotometryTab:
 
         period = power = best = None
         try:
+            if run_lomb_scargle is None:
+                raise RuntimeError(
+                    "Module core.periodogram_tools manquant. Copiez core/periodogram_tools.py depuis les sources NPOAP."
+                )
             period, power, best = run_lomb_scargle(t_obs, y_obs, min_period=min_per, max_period=max_per_use)
             self.lc_period_best["value"] = best
         except Exception as e:
@@ -5998,36 +6027,42 @@ class AsteroidPhotometryTab:
         f_mod = None
         phase = None
         n_h = 3
-        res_ls = fit_harmonic_series_wls(
-            t_obs, y_obs, y_err, P, n_harmonics=n_h, linear_drift=False,
-        )
-        if res_ls.get("success"):
-            f_mod = np.asarray(res_ls["y_model"], dtype=float)
-            t_ref = res_ls["t_ref"]
-            omega = res_ls["omega"]
-            alpha = res_ls["phase_shift_alpha"]
-            phi = omega * (t_obs - t_ref)
-            phase = np.mod(phi - alpha, 2.0 * np.pi) / (2.0 * np.pi)
-            t0_eq = res_ls["t0_equiv"]
-            med_fl = float(np.median(y_obs))
-            denom = max(abs(med_fl), 1e-9)
-            amp_r = res_ls["amplitude_R"]
-            a_approx = float(np.clip(amp_r / denom, 0.0, 20.0))
-            self.lc_fit_result.update({
-                "P": P,
-                "t0": t0_eq,
-                "A": a_approx,
-                "F0": med_fl,
-                "chi2": res_ls["chi2"],
-                "n_dof": res_ls["n_dof"],
-                "success": True,
-                "message": "Moindres carrés harmonique",
-            })
-        else:
-            logger.warning("Ajustement harmonique échoué : %s", res_ls.get("message"))
+        if fit_harmonic_series_wls is None:
+            logger.warning("fit_harmonic_series_wls indisponible — affichage courbe sans modèle harmonique.")
             self.lc_fit_result.update({"success": False, "P": P, "t0": None, "A": None, "F0": None})
             t0_med = float(np.median(t_obs))
             phase = np.mod(t_obs - t0_med, P) / P if P > 0 else np.zeros_like(t_obs)
+        else:
+            res_ls = fit_harmonic_series_wls(
+                t_obs, y_obs, y_err, P, n_harmonics=n_h, linear_drift=False,
+            )
+            if res_ls.get("success"):
+                f_mod = np.asarray(res_ls["y_model"], dtype=float)
+                t_ref = res_ls["t_ref"]
+                omega = res_ls["omega"]
+                alpha = res_ls["phase_shift_alpha"]
+                phi = omega * (t_obs - t_ref)
+                phase = np.mod(phi - alpha, 2.0 * np.pi) / (2.0 * np.pi)
+                t0_eq = res_ls["t0_equiv"]
+                med_fl = float(np.median(y_obs))
+                denom = max(abs(med_fl), 1e-9)
+                amp_r = res_ls["amplitude_R"]
+                a_approx = float(np.clip(amp_r / denom, 0.0, 20.0))
+                self.lc_fit_result.update({
+                    "P": P,
+                    "t0": t0_eq,
+                    "A": a_approx,
+                    "F0": med_fl,
+                    "chi2": res_ls["chi2"],
+                    "n_dof": res_ls["n_dof"],
+                    "success": True,
+                    "message": "Moindres carrés harmonique",
+                })
+            else:
+                logger.warning("Ajustement harmonique échoué : %s", res_ls.get("message"))
+                self.lc_fit_result.update({"success": False, "P": P, "t0": None, "A": None, "F0": None})
+                t0_med = float(np.median(t_obs))
+                phase = np.mod(t_obs - t0_med, P) / P if P > 0 else np.zeros_like(t_obs)
 
         self.lc_ax_lc.clear()
         self.lc_ax_lc.errorbar(
@@ -6850,6 +6885,13 @@ class AsteroidPhotometryTab:
                     max_per_use = cap
                     note = f" (P max réduit à {max_per_use:.4f} j, durée données ≈ {span:.4f} j)"
             try:
+                if run_lomb_scargle is None:
+                    messagebox.showerror(
+                        "Lomb-Scargle",
+                        "Le module core.periodogram_tools est absent de cette installation.\n"
+                        "Copiez le fichier core/periodogram_tools.py depuis l'archive NPOAP complète.",
+                    )
+                    return
                 period, power, best = run_lomb_scargle(
                     self.lc_data["time"], self.lc_data["flux"], min_period=min_per, max_period=max_per_use
                 )
@@ -6972,6 +7014,13 @@ class AsteroidPhotometryTab:
             t_obs = np.asarray(self.lc_data["time"], dtype=float)
             try:
                 if self.lc_harmonic_ls_var.get() and not force_manual:
+                    if fit_harmonic_series_wls is None:
+                        messagebox.showerror(
+                            "Modèle",
+                            "Le module asteroid_lightcurve_model est incomplet (fonction harmonique manquante).\n"
+                            "Remplacez core/asteroid_lightcurve_model.py par la version des sources NPOAP.",
+                        )
+                        return
                     try:
                         n_h = int(self.lc_n_harm_var.get().strip())
                     except ValueError:
@@ -7035,6 +7084,12 @@ class AsteroidPhotometryTab:
                         messagebox.showwarning("Attention", "F0 doit être un flux de référence > 0.")
                         return
                     self.lc_t0_var.set(f"{t0:.6f}")
+                    if light_curve_model is None:
+                        messagebox.showerror(
+                            "Modèle",
+                            "light_curve_model indisponible. Mettez à jour core/asteroid_lightcurve_model.py.",
+                        )
+                        return
                     f_mod = light_curve_model(t_obs, P, t0, A, F0)
                     phase = np.mod(t_obs - t0, P) / P
                     self.lc_fit_status_var.set("Modèle manuel (paramètres saisis).")
@@ -7100,6 +7155,12 @@ class AsteroidPhotometryTab:
         def run_fit():
             if self.lc_data["time"] is None or self.lc_data["flux"] is None:
                 messagebox.showwarning("Attention", "Chargez d'abord un fichier.")
+                return
+            if fit_light_curve is None:
+                messagebox.showerror(
+                    "Ajustement",
+                    "fit_light_curve indisponible. Mettez à jour core/asteroid_lightcurve_model.py depuis les sources NPOAP.",
+                )
                 return
             try:
                 P_init = float(self.lc_P_var.get())
