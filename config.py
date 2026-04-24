@@ -5,11 +5,11 @@ from pathlib import Path
 # Observatoire (valeurs par défaut – modifiables via HomeTab)
 # ──────────────────────────────────────────────────────────────
 OBSERVATORY = {
-    "name": "",
-    "lat": ,   
-    "lon": ,
-    "elev": ,     # mètres
-    "timezone": "",
+    "name": "Deep Sky Chile",
+    "lat": -30.52,   
+    "lon": -70.82,
+    "elev": 1710.0,     # mètres
+    "timezone": "Santiago, Chili",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -40,17 +40,19 @@ PHOTOMETRY_DEFAULTS = {
 # Commande Python sous WSL pour exécuter scripts/kbmod_wsl_detect.py.
 # Par défaut "python3" (Python par défaut dans le PATH WSL).
 # Si vous avez installé KBMOD dans un env conda/venv, indiquez le chemin complet
-# dans WSL, ex: "/home/user/miniconda3/bin/python3" ou "/home/user/miniconda3/envs/kbmod/bin/python3"
-KBMOD_WSL_PYTHON = "/home/user/miniconda3/envs/astroenv/bin/python3"
+# dans WSL, ex: "/home/docke/miniconda3/bin/python3" ou "/home/docke/miniconda3/envs/kbmod/bin/python3"
+KBMOD_WSL_PYTHON = "/home/docke/miniconda3/envs/astroenv/bin/python3"
 
 # ──────────────────────────────────────────────────────────────
 # Astrometry.net (clé API locale)
 # ──────────────────────────────────────────────────────────────
 ASTROMETRY_API_KEY_FILE = Path.home() / ".astrometry_api_key"
 
+# ──────────────────────────────────────────────────────────────
+
 
 EQUIPMENT_OBSERVATION = {
-    "obs_code": "",           # Code observateur AAVSO (5 caractères max)
+    "obs_code": "VJEB",           # Code observateur AAVSO (5 caractères max)
     "camera": "CCD",             # Nom de la caméra
     "binning": "1x1",         # Binning (1x1, 2x2, 3x3, 4x4)
     "delim": "tab",             # Délimiteur pour rapports (, ; | : ! / ? ou tab)
