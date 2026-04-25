@@ -1,0 +1,70 @@
+@echo off
+chcp 65001 >nul
+REM ============================================================
+REM Lancement NPOAP - environnement conda astroenv (Python 3.11+)
+REM Installation type: installation.bat
+REM ============================================================
+
+title NPOAP - Lancement
+
+cd /d "%~dp0"
+
+set "CONDA_ROOT="
+where conda >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    for /f "delims=" %%i in ('conda info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%ProgramData%\Miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%USERPROFILE%\miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT if exist "%LOCALAPPDATA%\miniconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%LOCALAPPDATA%\miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT if exist "%ProgramData%\Anaconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%ProgramData%\Anaconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%USERPROFILE%\anaconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+)
+if not defined CONDA_ROOT (
+    echo ERREUR: conda introuvable. Installez Miniconda et l'environnement astroenv (installation.bat).
+    pause
+    exit /b 1
+)
+
+if not exist "%CONDA_ROOT%\Scripts\activate.bat" (
+    echo ERREUR: activate.bat introuvable.
+    pause
+    exit /b 1
+)
+
+call "%CONDA_ROOT%\Scripts\activate.bat" astroenv
+if errorlevel 1 (
+    echo ERREUR: impossible d'activer astroenv.
+    echo Relancez installation.bat ou : conda create -n astroenv python=3.11 -y
+    pause
+    exit /b 1
+)
+
+echo Lancement de NPOAP...
+echo.
+
+if not exist "main.py" (
+    echo Erreur: main.py non trouve dans %CD%
+    pause
+    exit /b 1
+)
+
+if not exist "logs" mkdir logs
+
+python main.py
+
+if errorlevel 1 (
+    echo.
+    echo Erreur lors du lancement ^(code %ERRORLEVEL%^).
+    echo Dependances : pip install -r requirements_install_core.txt dans astroenv
+    pause
+)

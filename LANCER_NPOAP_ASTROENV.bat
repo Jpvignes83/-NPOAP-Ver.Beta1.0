@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
 REM ============================================================
-REM Lancement NPOAP — environnement conda « astroenv »
-REM Ne pas utiliser « conda activate » seul : sans conda init cmd
-REM ne charge pas conda ; on appelle activate.bat (comme LANCEMENT.bat).
+REM Lancement NPOAP - environnement conda astroenv
+REM Ne pas utiliser conda activate seul: sans conda init cmd
+REM On appelle activate.bat directement (comme LANCEMENT.bat).
 REM ============================================================
 
 title NPOAP - Lancement (astroenv)
