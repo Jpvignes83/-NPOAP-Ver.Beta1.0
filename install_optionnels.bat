@@ -10,6 +10,8 @@ cd /d "%~dp0"
 set "FAIL_COUNT=0"
 set "MISS_COUNT=0"
 set "DONE_WSL_PROSPECTOR=0"
+set "AUTO_MODE=0"
+if /i "%NPOAP_AUTO%"=="1" set "AUTO_MODE=1"
 set "LOG_FILE=%~dp0install_optionnels.log"
 
 echo ============================================================ > "%LOG_FILE%"
@@ -23,6 +25,7 @@ echo NPOAP - Installation des composants optionnels
 echo ============================================================
 echo Dossier: %CD%
 echo Journal: %LOG_FILE%
+if "!AUTO_MODE!"=="1" echo Mode auto: OUI ^(NPOAP_AUTO=1^)
 echo.
 echo Ce script lance automatiquement les installateurs optionnels.
 echo Certains composants peuvent demander des droits administrateur ou un redemarrage.
@@ -44,6 +47,10 @@ call :run_bat_step "Astrometry.net dans WSL" "install_astrometry_wsl.bat"
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 call :run_bat_step "KBMOD sous WSL/Linux (aide/doc)" "install_kbmod_wsl.bat"
+call :wait_next_step
+if errorlevel 1 goto :end_sequence
+
+call :install_gfortran_windows
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
@@ -78,6 +85,7 @@ echo ============================================================
 echo Echecs: !FAIL_COUNT!
 echo Fichiers manquants: !MISS_COUNT!
 echo Voir le journal: %LOG_FILE%
+if "!AUTO_MODE!"=="1" echo Mode auto utilise: OUI
 echo.
 if not "!FAIL_COUNT!"=="0" (
     echo ATTENTION: certaines etapes ont echoue. Verifiez le journal.
@@ -162,6 +170,41 @@ for /f "delims=" %%D in ('wsl -l -q 2^>nul') do (
     if not errorlevel 1 exit /b 0
 )
 exit /b 1
+
+:install_gfortran_windows
+echo.
+echo ------------------------------------------------------------
+echo [OPTIONNEL] gfortran Windows (pour FSPS natif)
+echo ------------------------------------------------------------
+
+call :ask_install_or_skip "gfortran Windows (pour FSPS natif)"
+if errorlevel 1 (
+    echo [SKIP] Ignore par l'utilisateur: gfortran Windows
+    echo [SKIP] Ignore par l'utilisateur: gfortran Windows>> "%LOG_FILE%"
+    exit /b 0
+)
+
+echo [START] gfortran Windows>> "%LOG_FILE%"
+
+where gfortran >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%G in ('where gfortran 2^>nul') do (
+        echo [OK] gfortran detecte: %%G
+        echo [OK] gfortran detecte: %%G>> "%LOG_FILE%"
+        goto :gfortran_done
+    )
+)
+
+echo [SKIP] gfortran non detecte - installation manuelle recommandee.
+echo [SKIP] gfortran non detecte - installation manuelle recommandee.>> "%LOG_FILE%"
+echo   1^)^ Ouvrez docs\MANUEL_INSTALLATION.md
+echo   2^)^ Installez MinGW-w64/WinLibs puis rouvrez la console
+echo   3^)^ Verifiez avec: where gfortran
+start "" "https://winlibs.com/"
+set /a MISS_COUNT+=1
+
+:gfortran_done
+exit /b 0
 
 :run_prospector_windows
 echo.
@@ -286,6 +329,10 @@ exit /b 0
 
 :wait_next_step
 echo.
+if "!AUTO_MODE!"=="1" (
+    echo [AUTO] Continuation automatique de la sequence.
+    exit /b 0
+)
 set "CONTINUE_OPTIONNELS="
 set /p CONTINUE_OPTIONNELS="Continuer la sequence optionnelle ? (O/N): "
 if /i "!CONTINUE_OPTIONNELS!"=="N" (
@@ -297,6 +344,10 @@ exit /b 0
 
 :ask_install_or_skip
 set "ASK_LABEL=%~1"
+if "!AUTO_MODE!"=="1" (
+    echo [AUTO] Installation de l'etape '!ASK_LABEL!'.
+    exit /b 0
+)
 :ask_install_or_skip_loop
 set "ASK_CHOICE="
 set /p ASK_CHOICE="Installer l'etape '!ASK_LABEL!' ? (O/N): "
