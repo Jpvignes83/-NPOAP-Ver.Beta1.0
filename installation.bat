@@ -561,16 +561,21 @@ REM ===================================================================
 echo %BLUE%=== ETAPE 7: Creation des scripts de lancement ===%RESET%
 echo.
 
-REM Script de lancement principal
-(
-    echo @echo off
-    echo call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
-    echo cd /d "%INSTALL_DIR%"
-    echo python main.py
-    echo pause
-) > "%INSTALL_DIR%\LANCER_NPOAP.bat"
-
-echo %GREEN%Script de lancement cree: %INSTALL_DIR%\LANCER_NPOAP.bat%RESET%
+REM Script de lancement principal : LANCEMENT.bat (fourni a cote de installation.bat^)
+if exist "%~dp0LANCEMENT.bat" (
+    copy /Y "%~dp0LANCEMENT.bat" "%INSTALL_DIR%\LANCEMENT.bat" >nul
+    echo %GREEN%Script de lancement copie: %INSTALL_DIR%\LANCEMENT.bat%RESET%
+) else (
+    echo %YELLOW%LANCEMENT.bat absent du package - generation d'un lanceur minimal vers %ENV_NAME%...%RESET%
+    (
+        echo @echo off
+        echo call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
+        echo cd /d "%INSTALL_DIR%"
+        echo python main.py
+        echo pause
+    ) > "%INSTALL_DIR%\LANCEMENT.bat"
+    echo %GREEN%Script de lancement cree: %INSTALL_DIR%\LANCEMENT.bat%RESET%
+)
 echo.
 
 REM ===================================================================
@@ -625,7 +630,7 @@ echo   Installation terminee!
 echo ============================================================
 echo.
 echo Pour lancer NPOAP, utilisez:
-echo   %INSTALL_DIR%\LANCER_NPOAP.bat
+echo   %INSTALL_DIR%\LANCEMENT.bat
 echo.
 echo Ou depuis la ligne de commande:
 echo   call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
@@ -635,6 +640,7 @@ echo.
 echo ------------------------------------------------------------
 echo   Composants optionnels (scripts dans le dossier NPOAP)
 echo ------------------------------------------------------------
+echo   Installation auto de tous les optionnels : install_optionnels.bat
 echo   Visual C++ Build Tools / MSVC .... install_msvc_build_tools.bat
 echo   CMake .......................... install_cmake.bat
 echo   WSL ............................ install_wsl.bat
@@ -647,6 +653,21 @@ echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
 echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements_install_core.txt)
 echo.
 echo Ouvrez le fichier texte LISTE_INSTALL_OPTIONNELS.txt pour le meme tableau.
+echo.
+set "RUN_OPTIONNELS="
+set /p RUN_OPTIONNELS="Lancer install_optionnels.bat maintenant pour executer toute la sequence optionnelle ? (O/N): "
+if /i "!RUN_OPTIONNELS!"=="O" (
+    if exist "install_optionnels.bat" (
+        echo.
+        echo Lancement de install_optionnels.bat...
+        call "install_optionnels.bat"
+    ) else (
+        echo.
+        echo %YELLOW%install_optionnels.bat introuvable dans %CD%.%RESET%
+    )
+) else (
+    echo Composants optionnels ignores pour cette execution.
+)
 echo.
 pause
 
