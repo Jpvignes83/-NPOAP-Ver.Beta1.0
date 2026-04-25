@@ -1,0 +1,5 @@
+# KBMOD (Synthetic Tracking) - à installer sous WSL uniquement
+# NPOAP sous Windows appelle le script scripts/kbmod_wsl_detect.py via WSL.
+# Installer ces dépendances dans l'environnement Python de votre WSL (Ubuntu, etc.).
+# Voir docs/INSTALL_KBMOD_WSL.md pour les étapes complètes.
+kbmod @ git+https://github.com/dirac-institute/kbmod.git
