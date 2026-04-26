@@ -1,7 +1,7 @@
 @echo off
 REM NPOAP — Lance l'installation Prospector + FSPS dans WSL2 (Linux).
 REM Necessite install_prospector_wsl.sh dans le meme dossier.
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 set "SCRIPT_SH="
 
@@ -21,32 +21,52 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if exist "%~dp0install_prospector_wsl.sh" (
-  set "SCRIPT_SH=%~dp0install_prospector_wsl.sh"
-)
-if not defined SCRIPT_SH if exist "%~dp0Installation_fsps\install_prospector_wsl.sh" (
-  set "SCRIPT_SH=%~dp0Installation_fsps\install_prospector_wsl.sh"
+REM Recherche du .sh : %%~fI normalise les ".." ^(dossier Installation_fsps duplique, etc.^).
+set "SCRIPT_SH="
+for %%I in (
+  "%~dp0install_prospector_wsl.sh"
+  "%~dp0..\install_prospector_wsl.sh"
+  "%~dp0..\..\install_prospector_wsl.sh"
+  "%~dp0..\..\..\install_prospector_wsl.sh"
+  "%~dp0..\..\..\..\install_prospector_wsl.sh"
+  "%~dp0..\..\..\..\..\install_prospector_wsl.sh"
+  "%~dp0..\..\..\..\..\..\install_prospector_wsl.sh"
+  "%~dp0Installation_fsps\install_prospector_wsl.sh"
+  "%~dp0..\Installation_fsps\install_prospector_wsl.sh"
+  "%~dp0..\..\Installation_fsps\install_prospector_wsl.sh"
+  "%~dp0..\..\..\Installation_fsps\install_prospector_wsl.sh"
+) do (
+  if exist "%%~fI" (
+    set "SCRIPT_SH=%%~fI"
+    goto :script_sh_found
+  )
 )
 
-if not defined SCRIPT_SH (
-  echo ERREUR : install_prospector_wsl.sh est introuvable dans :
-  echo   %~dp0
-  echo   %~dp0Installation_fsps\
-  echo Placez prospector.bat et install_prospector_wsl.sh dans le meme dossier,
-  echo ou gardez la structure standard du package NPOAP.
-  pause
-  exit /b 1
-)
+echo ERREUR : install_prospector_wsl.sh introuvable.
+echo Dossier du prospector.bat : %~dp0
+echo Verifiez que install_prospector_wsl.sh est dans ce dossier ou dans un parent
+echo ^(jusqu'a 6 niveaux au-dessus^) ou sous ...\Installation_fsps\
+echo.
+echo Astuce : copiez les deux fichiers depuis le depot vers
+echo   C:\NPOAP\Installation_fsps\
+echo puis lancez C:\NPOAP\Installation_fsps\prospector.bat
+pause
+exit /b 1
+
+:script_sh_found
+
+REM Executer WSL depuis le repertoire du script ^(chemins relatifs eventuels^).
+for %%J in ("%SCRIPT_SH%") do cd /d "%%~dpJ"
 
 echo Demarrage du script Linux dans WSL...
 echo Un mot de passe peut etre demande pour "sudo apt-get".
 echo.
 
 REM Convertir le chemin Windows du script en chemin Linux WSL (/mnt/c/...).
-for /f "delims=" %%P in ('wsl wslpath -a "%SCRIPT_SH%"') do set "SCRIPT_WSL=%%P"
+for /f "delims=" %%P in ('wsl wslpath -a "!SCRIPT_SH!"') do set "SCRIPT_WSL=%%P"
 if not defined SCRIPT_WSL (
   echo ERREUR : impossible de convertir le chemin du script pour WSL.
-  echo Script Windows: %SCRIPT_SH%
+  echo Script Windows: !SCRIPT_SH!
   pause
   exit /b 1
 )
