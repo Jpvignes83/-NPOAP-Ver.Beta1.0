@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+# NPOAP — Profil pip unifié pour install_optionnels.bat
+#
+# Regroupe auparavant :
+#   - PHOEBE2 (étoiles binaires) — onglet Étoiles binaires
+#   - SNe Ia (sncosmo) — onglet Photométrie transitoires
+#   - STDPipe + scikit-learn + celerite2 (GP, etc.)
+#
+# Installation (environnement astroenv ou venv NPOAP) :
+#   pip install -r requirements_install_optionnels.txt
+#
+# PHOEBE2 sous Windows : parfois Microsoft Visual C++ Build Tools
+# (install_msvc_build_tools.bat, docs/MANUEL_INSTALLATION.md).
+# Si pip annonce « Defaulting to user installation », voir
+# requirements_install_core / notes projet.
+#
+# === PHOEBE2 ===
+phoebe>=2.4.22,<2.5
+
+# === Cosmologie SNe (SALT2/SALT3, cache modèles au 1er usage) ===
+sncosmo>=2.10,<3
+iminuit>=2.0
+
+# === STDPipe + processus gaussiens (celerite2) ===
+stdpipe
+scikit-learn
+celerite2
