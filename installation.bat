@@ -647,8 +647,7 @@ echo   WSL ............................ install_wsl.bat
 echo   Ubuntu (distro WSL) ............ install_ubuntu_wsl.bat
 echo   Astrometry.net dans WSL ........ install_astrometry_wsl.bat
 echo   KBMOD sous WSL/Linux ........... install_kbmod_wsl.bat
-echo   Prospector (astroenv Windows) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
-echo   idem (PowerShell + options) .... INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1
+echo   Prospector Windows (astroenv) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat / .ps1
 echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
 echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements_install_core.txt)
 echo.

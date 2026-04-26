@@ -9,7 +9,6 @@ cd /d "%~dp0"
 
 set "FAIL_COUNT=0"
 set "MISS_COUNT=0"
-set "DONE_WSL_PROSPECTOR=0"
 set "AUTO_MODE=0"
 if /i "%NPOAP_AUTO%"=="1" set "AUTO_MODE=1"
 set "LOG_FILE=%~dp0install_optionnels.log"
@@ -57,12 +56,8 @@ call :install_gfortran_windows
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
-REM Prospector Windows: on privilegie le .ps1 (plus complet), sinon fallback .bat.
+REM Prospector : Windows uniquement ^(.ps1^) ; fallback WSL seulement si echec.
 call :run_prospector_windows
-call :wait_next_step
-if errorlevel 1 goto :end_sequence
-
-call :run_bat_step "Prospector + FSPS via WSL" "Installation_fsps\prospector.bat"
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 call :run_bat_step "SORA seul (reinstall astroenv)" "INSTALLER_SORA_ASTROENV.bat"
@@ -132,14 +127,6 @@ if /i "!STEP_FILE!"=="install_ubuntu_wsl.bat" (
     if "!errorlevel!"=="0" (
         echo [SKIP] Ubuntu WSL deja installee - etape ignoree
         echo [SKIP] Ubuntu WSL deja installee - etape ignoree>> "%LOG_FILE%"
-        exit /b 0
-    )
-)
-
-if /i "!STEP_FILE!"=="Installation_fsps\prospector.bat" (
-    if "!DONE_WSL_PROSPECTOR!"=="1" (
-        echo [SKIP] Prospector WSL deja traite plus tot dans la sequence
-        echo [SKIP] Prospector WSL deja traite plus tot dans la sequence>> "%LOG_FILE%"
         exit /b 0
     )
 )
@@ -215,7 +202,7 @@ echo ------------------------------------------------------------
 echo [OPTIONNEL] Prospector Windows (astroenv)
 echo ------------------------------------------------------------
 echo Le .ps1 installe Prospector avec --no-deps par defaut ^(evite le build fsps via pip^).
-echo FSPS compile : etape -InstallFSPS dans le .ps1 ^(gfortran + CMake^) ou WSL ^(prospector.bat^).
+echo FSPS compile : -InstallFSPS dans le .ps1 ^(gfortran + CMake^) ou WSL manuel ^(Installation_fsps\prospector.bat^).
 
 call :ask_install_or_skip "Prospector Windows (astroenv)"
 if errorlevel 1 (
@@ -229,32 +216,30 @@ echo [START] Prospector Windows>> "%LOG_FILE%"
 if exist "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" (
     call :run_prospector_ps1
     if errorlevel 1 (
-        echo [ECHEC] Prospector Windows (.ps1)
-        echo [ECHEC] Prospector Windows (.ps1)>> "%LOG_FILE%"
+        echo [ECHEC] Prospector Windows (.ps1^)
+        echo [ECHEC] Prospector Windows (.ps1^)>> "%LOG_FILE%"
         set /a FAIL_COUNT+=1
         call :offer_wsl_prospector_fallback
     ) else (
-        echo [OK] Prospector Windows (.ps1)
-        echo [OK] Prospector Windows (.ps1)>> "%LOG_FILE%"
+        echo [OK] Prospector Windows (.ps1^)
+        echo [OK] Prospector Windows (.ps1^)>> "%LOG_FILE%"
     )
     exit /b 0
 )
-
 if exist "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat" (
     call "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat"
     set "RC=!errorlevel!"
     if "!RC!"=="0" (
-        echo [OK] Prospector Windows (.bat)
-        echo [OK] Prospector Windows (.bat)>> "%LOG_FILE%"
+        echo [OK] Prospector Windows (.bat^)
+        echo [OK] Prospector Windows (.bat^)>> "%LOG_FILE%"
     ) else (
-        echo [ECHEC] Prospector Windows (.bat) ^(code !RC!^)
-        echo [ECHEC] Prospector Windows (.bat) ^(code !RC!^)>> "%LOG_FILE%"
+        echo [ECHEC] Prospector Windows (.bat^) ^(code !RC!^)
+        echo [ECHEC] Prospector Windows (.bat^) ^(code !RC!^)>> "%LOG_FILE%"
         set /a FAIL_COUNT+=1
         call :offer_wsl_prospector_fallback
     )
     exit /b 0
 )
-
 echo [SKIP] INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1/.bat introuvable
 echo [SKIP] Prospector Windows introuvable>> "%LOG_FILE%"
 set /a MISS_COUNT+=1
@@ -386,5 +371,4 @@ if "!RC_FALLBACK!"=="0" (
     echo [ECHEC] Fallback Prospector WSL ^(code !RC_FALLBACK!^)>> "%LOG_FILE%"
     set /a FAIL_COUNT+=1
 )
-set "DONE_WSL_PROSPECTOR=1"
 exit /b 0
