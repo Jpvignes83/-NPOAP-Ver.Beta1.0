@@ -5,6 +5,7 @@
 #   - PHOEBE2 (étoiles binaires) — onglet Étoiles binaires
 #   - rebound + ultranest — N-body / nested sampling (data_analysis, core/nbody_simulation)
 #   - SNe Ia (sncosmo) — onglet Photométrie transitoires
+#   - SORA (sora-astro) — occultations (déjà dans requirements_install_core si install principal)
 #   - STDPipe + scikit-learn + celerite2 (GP, etc.)
 #
 # Installation (environnement astroenv ou venv NPOAP) :
@@ -21,6 +22,9 @@ phoebe>=2.4.22,<2.5
 # === N-body + nested sampling (optionnel, wheels pip sous Windows en général) ===
 rebound>=4.0
 ultranest>=4.0
+
+# === SORA (occultations) — même contrainte que le cœur ; pip « already satisfied » si déjà installé ===
+sora-astro>=0.3.2
 
 # === Cosmologie SNe (SALT2/SALT3, cache modèles au 1er usage) ===
 sncosmo>=2.10,<3

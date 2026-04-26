@@ -32,7 +32,7 @@ echo.
 echo Ce script lance automatiquement les installateurs optionnels.
 echo Certains composants peuvent demander des droits administrateur ou un redemarrage.
 echo.
-echo Profil PyPI unifie : requirements_install_optionnels.txt ^(PHOEBE, rebound, ultranest, SNe Ia, STDPipe+GP^).
+echo Profil PyPI unifie : requirements_install_optionnels.txt ^(PHOEBE, rebound, ultranest, SORA, SNe Ia, STDPipe+GP^).
 echo Si vous voyez encore "requirements-cosmology-sne.txt", mettez a jour ce .bat depuis le depot.
 echo.
 
@@ -63,9 +63,9 @@ REM Prospector : Windows uniquement ^(.ps1^) ; fallback WSL seulement si echec.
 call :run_prospector_windows
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
-call :run_bat_step "SORA seul (reinstall astroenv)" "INSTALLER_SORA_ASTROENV.bat"
-call :wait_next_step
-if errorlevel 1 goto :end_sequence
+
+REM SORA ^(sora-astro^) : installe / met a jour avec les autres paquets PyPI ^(requirements_install_optionnels.txt^).
+REM Mise a jour SORA seule : double-cliquez INSTALLER_SORA_ASTROENV.bat ou pip install -U sora-astro dans astroenv.
 
 call :install_pip_optionnels
 call :wait_next_step
