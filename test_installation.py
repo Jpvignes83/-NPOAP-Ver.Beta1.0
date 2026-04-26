@@ -345,7 +345,7 @@ def main():
         ('rebound', False, "Simulation N-body"),
         ('ultranest', False, "Nested sampling bayésien"),
     ]
-    
+    missing_physics_bundle = False
     for module_info in optional_modules:
         if len(module_info) == 2:
             module_name, optional_reason = module_info
@@ -362,6 +362,12 @@ def main():
         else:
             print_warning(message)
             warnings.append(message)
+            missing_physics_bundle = True
+    if missing_physics_bundle:
+        print_info(
+            "Indice : PHOEBE, rebound et ultranest sont listés dans requirements_install_optionnels.txt — "
+            "pip install -r requirements_install_optionnels.txt (astroenv) ou install_optionnels.bat."
+        )
     
     # CuPy (GPU) - vérification spéciale
     print_info("Vérification de CuPy (accélération GPU)...")
@@ -425,8 +431,8 @@ def main():
         print_warning("Prospector indisponible ou incomplet (optionnel)")
         if prospector_results['errors']:
             for error in prospector_results['errors']:
-                print_error(f"  {error}")
-                errors.append(f"Prospector: {error}")
+                print_warning(f"  {error}")
+                warnings.append(f"Prospector: {error}")
     
     optional_total += 1
     

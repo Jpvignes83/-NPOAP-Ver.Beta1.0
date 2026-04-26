@@ -29,7 +29,7 @@ echo.
 echo Ce script lance automatiquement les installateurs optionnels.
 echo Certains composants peuvent demander des droits administrateur ou un redemarrage.
 echo.
-echo Profil PyPI unifie : requirements_install_optionnels.txt ^(PHOEBE, SNe Ia, STDPipe+GP^).
+echo Profil PyPI unifie : requirements_install_optionnels.txt ^(PHOEBE, rebound, ultranest, SNe Ia, STDPipe+GP^).
 echo Si vous voyez encore "requirements-cosmology-sne.txt", mettez a jour ce .bat depuis le depot.
 echo.
 

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 # NPOAP — Profil pip unifié pour install_optionnels.bat
 #
-# Regroupe auparavant :
+# Regroupe notamment :
 #   - PHOEBE2 (étoiles binaires) — onglet Étoiles binaires
+#   - rebound + ultranest — N-body / nested sampling (data_analysis, core/nbody_simulation)
 #   - SNe Ia (sncosmo) — onglet Photométrie transitoires
 #   - STDPipe + scikit-learn + celerite2 (GP, etc.)
 #
@@ -16,6 +17,10 @@
 #
 # === PHOEBE2 ===
 phoebe>=2.4.22,<2.5
+
+# === N-body + nested sampling (optionnel, wheels pip sous Windows en général) ===
+rebound>=4.0
+ultranest>=4.0
 
 # === Cosmologie SNe (SALT2/SALT3, cache modèles au 1er usage) ===
 sncosmo>=2.10,<3
