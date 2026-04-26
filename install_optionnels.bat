@@ -30,6 +30,9 @@ echo.
 echo Ce script lance automatiquement les installateurs optionnels.
 echo Certains composants peuvent demander des droits administrateur ou un redemarrage.
 echo.
+echo Profil PyPI unifie : requirements_install_optionnels.txt ^(PHOEBE, SNe Ia, STDPipe+GP^).
+echo Si vous voyez encore "requirements-cosmology-sne.txt", mettez a jour ce .bat depuis le depot.
+echo.
 
 call :run_bat_step "Visual C++ Build Tools / MSVC" "install_msvc_build_tools.bat"
 call :wait_next_step
@@ -66,7 +69,7 @@ call :run_bat_step "SORA seul (reinstall astroenv)" "INSTALLER_SORA_ASTROENV.bat
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
-call :install_sne_requirements
+call :install_pip_optionnels
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
@@ -259,70 +262,70 @@ echo [SKIP] Prospector Windows introuvable>> "%LOG_FILE%"
 set /a MISS_COUNT+=1
 exit /b 0
 
-:install_sne_requirements
+:install_pip_optionnels
 echo.
 echo ------------------------------------------------------------
-echo [OPTIONNEL] Profil SN Ia (requirements-cosmology-sne.txt)
+echo [OPTIONNEL] Paquets Python (requirements_install_optionnels.txt)
 echo ------------------------------------------------------------
 
-call :ask_install_or_skip "Profil SN Ia (requirements-cosmology-sne.txt)"
+call :ask_install_or_skip "Paquets optionnels PyPI (requirements_install_optionnels.txt)"
 if errorlevel 1 (
-    echo [SKIP] Ignore par l'utilisateur: Profil SN Ia
-    echo [SKIP] Ignore par l'utilisateur: Profil SN Ia>> "%LOG_FILE%"
+    echo [SKIP] Ignore par l'utilisateur: requirements_install_optionnels
+    echo [SKIP] Ignore par l'utilisateur: requirements_install_optionnels>> "%LOG_FILE%"
     exit /b 0
 )
 
-echo [START] requirements-cosmology-sne.txt>> "%LOG_FILE%"
+echo [START] requirements_install_optionnels.txt>> "%LOG_FILE%"
 
-if not exist "requirements-cosmology-sne.txt" (
-    echo [SKIP] requirements-cosmology-sne.txt introuvable
-    echo [SKIP] requirements-cosmology-sne.txt introuvable>> "%LOG_FILE%"
+if not exist "requirements_install_optionnels.txt" (
+    echo [SKIP] requirements_install_optionnels.txt introuvable
+    echo [SKIP] requirements_install_optionnels.txt introuvable>> "%LOG_FILE%"
     set /a MISS_COUNT+=1
     exit /b 0
 )
 
-set "CONDA_ROOT="
+set "CONDA_ROOT_OPT="
 where conda >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
-    for /f "delims=" %%i in ('conda info --base 2^>nul') do set "CONDA_ROOT=%%i"
+    for /f "delims=" %%i in ('conda info --base 2^>nul') do set "CONDA_ROOT_OPT=%%i"
 )
-if not defined CONDA_ROOT if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" (
-    for /f "delims=" %%i in ('"%ProgramData%\Miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+if not defined CONDA_ROOT_OPT if exist "%ProgramData%\Miniconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%ProgramData%\Miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT_OPT=%%i"
 )
-if not defined CONDA_ROOT if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" (
-    for /f "delims=" %%i in ('"%USERPROFILE%\miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
+if not defined CONDA_ROOT_OPT if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" (
+    for /f "delims=" %%i in ('"%USERPROFILE%\miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT_OPT=%%i"
 )
 
-if not defined CONDA_ROOT (
-    echo [ECHEC] conda introuvable - pip SNE non lance
-    echo [ECHEC] conda introuvable - pip SNE non lance>> "%LOG_FILE%"
+if not defined CONDA_ROOT_OPT (
+    echo [ECHEC] conda introuvable - pip optionnels non lance
+    echo [ECHEC] conda introuvable - pip optionnels non lance>> "%LOG_FILE%"
     set /a FAIL_COUNT+=1
     exit /b 0
 )
 
-if not exist "%CONDA_ROOT%\Scripts\activate.bat" (
-    echo [ECHEC] activate.bat introuvable sous %CONDA_ROOT%\Scripts
-    echo [ECHEC] activate.bat introuvable sous %CONDA_ROOT%\Scripts>> "%LOG_FILE%"
+if not exist "%CONDA_ROOT_OPT%\Scripts\activate.bat" (
+    echo [ECHEC] activate.bat introuvable sous %CONDA_ROOT_OPT%\Scripts
+    echo [ECHEC] activate.bat introuvable sous %CONDA_ROOT_OPT%\Scripts>> "%LOG_FILE%"
     set /a FAIL_COUNT+=1
     exit /b 0
 )
 
-call "%CONDA_ROOT%\Scripts\activate.bat" astroenv
+call "%CONDA_ROOT_OPT%\Scripts\activate.bat" astroenv
 if errorlevel 1 (
-    echo [ECHEC] activation astroenv impossible - pip SNE non lance
-    echo [ECHEC] activation astroenv impossible - pip SNE non lance>> "%LOG_FILE%"
+    echo [ECHEC] activation astroenv impossible - pip optionnels non lance
+    echo [ECHEC] activation astroenv impossible - pip optionnels non lance>> "%LOG_FILE%"
     set /a FAIL_COUNT+=1
     exit /b 0
 )
 
-python -m pip install --prefer-binary -r "requirements-cosmology-sne.txt"
-set "RC=!errorlevel!"
-if "!RC!"=="0" (
-    echo [OK] requirements-cosmology-sne.txt installe
-    echo [OK] requirements-cosmology-sne.txt installe>> "%LOG_FILE%"
+python -m pip install --prefer-binary -r "requirements_install_optionnels.txt"
+set "RC_OPT=!errorlevel!"
+if "!RC_OPT!"=="0" (
+    echo [OK] requirements_install_optionnels.txt installe
+    echo [OK] requirements_install_optionnels.txt installe>> "%LOG_FILE%"
 ) else (
-    echo [ECHEC] pip install requirements-cosmology-sne.txt ^(code !RC!^)
-    echo [ECHEC] pip install requirements-cosmology-sne.txt ^(code !RC!^)>> "%LOG_FILE%"
+    echo [ECHEC] pip install requirements_install_optionnels.txt ^(code !RC_OPT!^)
+    echo [ECHEC] pip install requirements_install_optionnels.txt ^(code !RC_OPT!^)>> "%LOG_FILE%"
     set /a FAIL_COUNT+=1
 )
 exit /b 0
