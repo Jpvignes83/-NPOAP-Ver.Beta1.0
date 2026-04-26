@@ -1,14 +1,18 @@
 @echo off
 REM NPOAP - Lance l'installateur PowerShell Prospector (meme dossier que ce .bat).
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 if not exist "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" (
     echo ERREUR : INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1 introuvable.
     pause
     exit /b 1
 )
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" %*
-set "EX=%errorLevel%"
-if not "%EX%"=="0" echo Code de sortie PowerShell : %EX%
+call :run_ps
+set "EX=!ERRORLEVEL!"
+if not "!EX!"=="0" echo Code de sortie PowerShell : !EX!
 pause
-exit /b %EX%
+exit /b !EX!
+
+:run_ps
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" %*
+exit /b %ERRORLEVEL%

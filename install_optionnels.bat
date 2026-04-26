@@ -214,6 +214,8 @@ echo.
 echo ------------------------------------------------------------
 echo [OPTIONNEL] Prospector Windows (astroenv)
 echo ------------------------------------------------------------
+echo Le .ps1 installe Prospector avec --no-deps par defaut ^(evite le build fsps via pip^).
+echo FSPS compile : etape -InstallFSPS dans le .ps1 ^(gfortran + CMake^) ou WSL ^(prospector.bat^).
 
 call :ask_install_or_skip "Prospector Windows (astroenv)"
 if errorlevel 1 (
@@ -225,19 +227,15 @@ if errorlevel 1 (
 echo [START] Prospector Windows>> "%LOG_FILE%"
 
 if exist "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" (
-    powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1"
-    set "RC=!errorlevel!"
-    if not defined RC set "RC=1"
-    2>nul set /a RC_NUM=!RC!
-    if not defined RC_NUM set "RC_NUM=1"
-    if !RC_NUM! EQU 0 (
-        echo [OK] Prospector Windows (.ps1)
-        echo [OK] Prospector Windows (.ps1)>> "%LOG_FILE%"
-    ) else (
-        echo [ECHEC] Prospector Windows (.ps1) ^(code !RC_NUM!^)
-        echo [ECHEC] Prospector Windows (.ps1) ^(code !RC_NUM!^)>> "%LOG_FILE%"
+    call :run_prospector_ps1
+    if errorlevel 1 (
+        echo [ECHEC] Prospector Windows (.ps1)
+        echo [ECHEC] Prospector Windows (.ps1)>> "%LOG_FILE%"
         set /a FAIL_COUNT+=1
         call :offer_wsl_prospector_fallback
+    ) else (
+        echo [OK] Prospector Windows (.ps1)
+        echo [OK] Prospector Windows (.ps1)>> "%LOG_FILE%"
     )
     exit /b 0
 )
@@ -261,6 +259,10 @@ echo [SKIP] INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1/.bat introuvable
 echo [SKIP] Prospector Windows introuvable>> "%LOG_FILE%"
 set /a MISS_COUNT+=1
 exit /b 0
+
+:run_prospector_ps1
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1"
+exit /b %ERRORLEVEL%
 
 :install_pip_optionnels
 echo.

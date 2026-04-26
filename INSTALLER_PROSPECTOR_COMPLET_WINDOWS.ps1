@@ -9,7 +9,9 @@ param(
     [string]$CondaEnv = "astroenv",
     [switch]$InstallFSPS = $false,
     [switch]$SkipVerification = $false,
-    [switch]$ForceReinstall = $false
+    [switch]$ForceReinstall = $false,
+    # Non recommandé sous Windows : pip resout fsps (Fortran) et echoue souvent meme si fsps est deja compile.
+    [switch]$TryPipProspectorWithDeps = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -455,18 +457,33 @@ if (-not $env:SPS_HOME) {
     $env:SPS_HOME = $spsHome
 }
 
-# Tout installer (inclut fsps) si compilateurs OK ; sinon repli --no-deps (fsps absent, stubs SPS_HOME deja crees)
-& $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir
-$prospectorOk = ($LASTEXITCODE -eq 0)
+# Sous Windows, pip install prospector SANS --no-deps declenche presque toujours un build fsps (Fortran),
+# meme si fsps a ete installe a l'etape 5 : inutile et fragile. Par defaut : toujours --no-deps.
+$gfortranForProspector = Get-Command gfortran -ErrorAction SilentlyContinue
+$useFullPipProspector = ($TryPipProspectorWithDeps -and $InstallFSPS -and $gfortranForProspector)
 
-if (-not $prospectorOk) {
-    Write-Warning "  Echec pip avec dependances (souvent: fsps a compiler — CMake/nmake/Fortran absents sous Windows)."
-    Write-Info "  Second essai: astro-prospector depuis Git sans dependances pip (fsps non installe)."
-    Write-Warning "  Pour spectres FSPS complets: relancez avec -InstallFSPS apres MSVC + gfortran, ou compilez python-fsps."
+if ($useFullPipProspector) {
+    Write-Warning "  Mode expert : pip avec resolution des dependances (-TryPipProspectorWithDeps)..."
+    & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir
+    $prospectorOk = ($LASTEXITCODE -eq 0)
+    if (-not $prospectorOk) {
+        Write-Warning "  Echec pip complet ; essai --no-deps..."
+        & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps
+        if ($LASTEXITCODE -ne 0) {
+            Write-ErrorMsg "  ✗ Erreur lors de l'installation de Prospector"
+            exit 1
+        }
+    }
+} else {
+    Write-Info "  Installation Prospector avec --no-deps (ne declenche pas le wheel fsps via pip)."
+    Write-Info "  Dependances Python : etapes 2-4 ; FSPS reel ou stubs : etape 5."
+    if (-not $gfortranForProspector) {
+        Write-Warning "  gfortran absent : etape 5 n'installera pas FSPS compile (stubs). WSL recommande pour FSPS complet."
+    }
     & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps
     if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "  ✗ Erreur lors de l'installation de Prospector (meme avec --no-deps)"
-        Write-ErrorMsg "  Verifiez Git, le reseau et les droits d'ecriture dans l'environnement Conda."
+        Write-ErrorMsg "  ✗ Erreur lors de l'installation de Prospector (--no-deps)"
+        Write-ErrorMsg "  Verifiez Git, le reseau et sedpy (etape 3)."
         exit 1
     }
 }
@@ -589,3 +606,5 @@ Write-Host "  conda activate $CondaEnv" -ForegroundColor Yellow
 # Guillemets simples : evite que PowerShell interprete "from" comme mot-cle
 Write-Host '  python -c "import prospect; from prospect.models import SpecModel; print(''Prospector OK!'')"' -ForegroundColor Yellow
 Write-Host ""
+
+exit 0
