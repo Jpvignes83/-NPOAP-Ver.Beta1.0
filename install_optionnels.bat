@@ -18,12 +18,15 @@ echo NPOAP - Installation optionnelle (demarrage: %date% %time%) >> "%LOG_FILE%"
 echo Dossier: %CD% >> "%LOG_FILE%"
 echo ============================================================ >> "%LOG_FILE%"
 
+if not defined INSTALL_COMPLET_LOG set "INSTALL_COMPLET_LOG=%~dp0install_complet.log"
+
 echo.
 echo ============================================================
 echo NPOAP - Installation des composants optionnels
 echo ============================================================
 echo Dossier: %CD%
-echo Journal: %LOG_FILE%
+echo Journal optionnel: %LOG_FILE%
+echo Journal complet ^(installation + optionnels^): !INSTALL_COMPLET_LOG!
 if "!AUTO_MODE!"=="1" echo Mode auto: OUI ^(NPOAP_AUTO=1^)
 echo.
 echo Ce script lance automatiquement les installateurs optionnels.
@@ -76,13 +79,21 @@ echo Fin: %date% %time% >> "%LOG_FILE%"
 echo Echecs: !FAIL_COUNT! ; Fichiers manquants: !MISS_COUNT! >> "%LOG_FILE%"
 echo ============================================================>> "%LOG_FILE%"
 
+if not defined INSTALL_COMPLET_LOG set "INSTALL_COMPLET_LOG=%~dp0install_complet.log"
+echo.>> "!INSTALL_COMPLET_LOG!"
+echo ----- Contenu integral install_optionnels.log ^(%date% %time%^) ----- >> "!INSTALL_COMPLET_LOG!"
+type "%LOG_FILE%" >> "!INSTALL_COMPLET_LOG!"
+echo.>> "!INSTALL_COMPLET_LOG!"
+echo Fin suite optionnelle dans install_complet.log: %date% %time% >> "!INSTALL_COMPLET_LOG!"
+
 echo.
 echo ============================================================
 echo Installation optionnelle terminee
 echo ============================================================
 echo Echecs: !FAIL_COUNT!
 echo Fichiers manquants: !MISS_COUNT!
-echo Voir le journal: %LOG_FILE%
+echo Journal optionnel: %LOG_FILE%
+echo Journal complet: !INSTALL_COMPLET_LOG!
 if "!AUTO_MODE!"=="1" echo Mode auto utilise: OUI
 echo.
 if not "!FAIL_COUNT!"=="0" (

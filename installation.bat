@@ -160,10 +160,26 @@ if exist "%WRTEST%" (
 )
 echo.
 
+REM Journal unique : installation principale + suite optionnelle ^(install_optionnels.bat^)
+set "INSTALL_COMPLET_LOG=!INSTALL_DIR!\install_complet.log"
+(
+echo ============================================================
+echo NPOAP - Journal d'installation complet (install_complet.log^)
+echo Demarrage session: %date% %time%
+echo Dossier d'installation: !INSTALL_DIR!
+echo Environnement conda prevu: %ENV_NAME%
+echo Dossier du script installation.bat: %~dp0
+echo.
+echo Remarque : accord de licence, verification administrateur et saisie du dossier ^(etape 1^) ont precede ce fichier.
+echo ============================================================
+) > "!INSTALL_COMPLET_LOG!"
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 2: Verification de la configuration systeme ^(detail sur console^) ===
+
 REM ===================================================================
 REM ETAPE 3: Python (Miniconda + astroenv uniquement — pas d'installateur python.org)
 REM ===================================================================
 echo %BLUE%=== ETAPE 3: Python pour NPOAP ^(via Miniconda^) ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 3: Python pour NPOAP (via Miniconda^) ===
 echo.
 echo NPOAP s'execute dans l'environnement Conda "%ENV_NAME%" avec Python 3.11 ^(conda create^).
 echo Un installateur separe depuis python.org n'est plus necessaire : Miniconda fournit deja
@@ -177,6 +193,7 @@ REM ===================================================================
 REM ETAPE 4: Installation de Miniconda
 REM ===================================================================
 echo %BLUE%=== ETAPE 4: Installation de Miniconda ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 4: Installation de Miniconda ===
 echo.
 
 REM Detection conda : d'abord conda.exe dans Scripts ; puis where ^(priorite aux lignes se terminant par conda.exe^)
@@ -426,8 +443,10 @@ REM ===================================================================
 REM ETAPE 5: Création de l'environnement Conda
 REM ===================================================================
 echo %BLUE%=== ETAPE 5: Creation de l'environnement Conda ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 5: Creation de l'environnement Conda ===
 echo.
 
+set "CONDA_FINAL_EC=0"
 conda env list | findstr /C:"%ENV_NAME%" >nul 2>&1
 if %errorLevel% equ 0 (
     echo L'environnement %ENV_NAME% existe deja.
@@ -435,19 +454,28 @@ if %errorLevel% equ 0 (
     set /p RECREATE_ENV="Voulez-vous le recreer? (O/N): "
     if /i "!RECREATE_ENV!"=="O" (
         echo Suppression de l'environnement existant...
-        call conda env remove -n %ENV_NAME% -y
+        call conda env remove -n %ENV_NAME% -y 1> "%TEMP%\npoap_conda_rm.log" 2>&1
+        type "%TEMP%\npoap_conda_rm.log"
+        type "%TEMP%\npoap_conda_rm.log" >> "!INSTALL_COMPLET_LOG!"
         echo Creation du nouvel environnement...
-        call conda create -n %ENV_NAME% python=3.11 -y
+        call conda create -n %ENV_NAME% python=3.11 -y 1> "%TEMP%\npoap_conda_cr.log" 2>&1
+        set "CONDA_FINAL_EC=!errorlevel!"
+        type "%TEMP%\npoap_conda_cr.log"
+        type "%TEMP%\npoap_conda_cr.log" >> "!INSTALL_COMPLET_LOG!"
     ) else (
         echo Utilisation de l'environnement existant.
     )
 ) else (
     echo Creation de l'environnement %ENV_NAME%...
-    call conda create -n %ENV_NAME% python=3.11 -y
+    call conda create -n %ENV_NAME% python=3.11 -y 1> "%TEMP%\npoap_conda_cr.log" 2>&1
+    set "CONDA_FINAL_EC=!errorlevel!"
+    type "%TEMP%\npoap_conda_cr.log"
+    type "%TEMP%\npoap_conda_cr.log" >> "!INSTALL_COMPLET_LOG!"
 )
 
-if %errorLevel% neq 0 (
+if !CONDA_FINAL_EC! neq 0 (
     echo %RED%ERREUR: Echec de la creation de l'environnement%RESET%
+    >>"!INSTALL_COMPLET_LOG!" echo ERREUR: conda environnement %ENV_NAME% ^(code !CONDA_FINAL_EC!^)
     pause
     exit /b 1
 )
@@ -459,6 +487,7 @@ REM ===================================================================
 REM ETAPE 6: Copie du projet, normalisation UTF-8, pip ^(cœur PyPI uniquement^)
 REM ===================================================================
 echo %BLUE%=== ETAPE 6: Copie NPOAP, requirements UTF-8, installation pip ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 6: Copie NPOAP, requirements UTF-8, installation pip ===
 echo.
 echo Dependances installees depuis requirements_install_core.txt ^(PyPI seul, pas de git / ezpadova / PHOEBE / optionnels lourds^).
 echo Pour tout requirements.txt ^(git+, etc.^): conda activate %ENV_NAME% ^& pip install -r requirements.txt
@@ -517,6 +546,11 @@ if defined SKIP_PROJECT_COPY (
         echo %YELLOW%ATTENTION: xcopy interrompu ^(code 2^).%RESET%
     )
 )
+if defined SKIP_PROJECT_COPY (
+    >>"!INSTALL_COMPLET_LOG!" echo Copie projet vers !INSTALL_DIR!: ignoree ^(sources identiques a la cible^).
+) else (
+    >>"!INSTALL_COMPLET_LOG!" echo Copie projet: xcopy code !XCOPY_EC! ^(sortie detaillee sur console^).
+)
 
 attrib -R "!INSTALL_DIR!\requirements.txt" >nul 2>&1
 attrib -R "!INSTALL_DIR!\requirements_install_core.txt" >nul 2>&1
@@ -541,12 +575,18 @@ if !errorLevel! neq 0 (
 )
 
 echo Mise a jour de pip, setuptools, wheel...
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip setuptools wheel 1> "%TEMP%\npoap_pip_up.log" 2>&1
+set "PIP_UP_EC=!errorlevel!"
+type "%TEMP%\npoap_pip_up.log"
+type "%TEMP%\npoap_pip_up.log" >> "!INSTALL_COMPLET_LOG!"
 
 echo Installation des dependances ^(cœur PyPI^) depuis requirements_install_core.txt...
-python -m pip install --prefer-binary -r "!INSTALL_DIR!\requirements_install_core.txt"
+python -m pip install --prefer-binary -r "!INSTALL_DIR!\requirements_install_core.txt" 1> "%TEMP%\npoap_pip_core.log" 2>&1
+set "PIP_CORE_EC=!errorlevel!"
+type "%TEMP%\npoap_pip_core.log"
+type "%TEMP%\npoap_pip_core.log" >> "!INSTALL_COMPLET_LOG!"
 
-if !errorLevel! neq 0 (
+if !PIP_CORE_EC! neq 0 (
     echo %YELLOW%ATTENTION: pip a signale une erreur. Verifiez les lignes ci-dessus ^(reseau, proxy, antivirus^).%RESET%
     echo Pour reessayer : conda activate %ENV_NAME% ^& cd /d "!INSTALL_DIR!" ^& python -m pip install --prefer-binary -r requirements_install_core.txt
 ) else (
@@ -559,6 +599,7 @@ REM ===================================================================
 REM ETAPE 7: Creation des scripts de lancement
 REM ===================================================================
 echo %BLUE%=== ETAPE 7: Creation des scripts de lancement ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 7: Creation des scripts de lancement ===
 echo.
 
 REM Script de lancement principal : LANCEMENT.bat (fourni a cote de installation.bat^)
@@ -582,6 +623,7 @@ REM ===================================================================
 REM ETAPE 8: Test de l'installation
 REM ===================================================================
 echo %BLUE%=== ETAPE 8: Test de l'installation ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 8: Test de l'installation ===
 echo.
 
 call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
@@ -589,7 +631,10 @@ cd /d "%INSTALL_DIR%"
 
 if exist "test_installation.py" (
     echo Execution des tests...
-    python test_installation.py
+    python test_installation.py 1> "%TEMP%\npoap_test_inst.log" 2>&1
+    set "TEST_INST_EC=!errorlevel!"
+    type "%TEMP%\npoap_test_inst.log"
+    type "%TEMP%\npoap_test_inst.log" >> "!INSTALL_COMPLET_LOG!"
     echo.
 ) else (
     echo %YELLOW%test_installation.py introuvable, test ignore%RESET%
@@ -599,6 +644,7 @@ REM ===================================================================
 REM ETAPE 9: Protection des fichiers source
 REM ===================================================================
 echo %BLUE%=== ETAPE 9: Protection des fichiers source ===%RESET%
+>>"!INSTALL_COMPLET_LOG!" echo === ETAPE 9: Protection des fichiers source ===
 echo.
 
 echo Protection des fichiers source contre les modifications...
@@ -628,6 +674,13 @@ echo.
 echo ============================================================
 echo   Installation terminee!
 echo ============================================================
+>>"!INSTALL_COMPLET_LOG!" echo.
+>>"!INSTALL_COMPLET_LOG!" echo ============================================================
+>>"!INSTALL_COMPLET_LOG!" echo Installation principale terminee: %date% %time%
+>>"!INSTALL_COMPLET_LOG!" echo Journal complet: !INSTALL_COMPLET_LOG!
+>>"!INSTALL_COMPLET_LOG!" echo ============================================================
+echo.
+echo Journal complet de cette installation: !INSTALL_COMPLET_LOG!
 echo.
 echo Pour lancer NPOAP, utilisez:
 echo   %INSTALL_DIR%\LANCEMENT.bat
@@ -659,6 +712,7 @@ if /i "!RUN_OPTIONNELS!"=="O" (
     if exist "install_optionnels.bat" (
         echo.
         echo Lancement de install_optionnels.bat...
+        set "INSTALL_COMPLET_LOG=!INSTALL_DIR!\install_complet.log"
         call "install_optionnels.bat"
     ) else (
         echo.
