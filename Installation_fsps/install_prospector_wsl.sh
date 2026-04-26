@@ -1,6 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # NPOAP — Installation Prospector + FSPS dans WSL (Ubuntu/Debian).
 # Appelé par prospector.bat ; ne pas déplacer seul sans adapter le .bat.
+# Fichier en fin de ligne LF uniquement (pas CRLF Windows) pour éviter erreurs "set: pipefail".
 set -euo pipefail
 
 echo ""
