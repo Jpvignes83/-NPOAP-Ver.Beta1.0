@@ -29,6 +29,21 @@ def _patch_distributions_skip_null_metadata():
 
 _patch_distributions_skip_null_metadata()
 
+
+def _configure_stdio_encoding():
+    """Evite UnicodeEncodeError (cp1252) quand stdout/stderr est redirige vers un fichier .log."""
+    for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
+        if stream is None:
+            continue
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+
+
+_configure_stdio_encoding()
+
 # Codes de couleur ANSI pour le terminal
 class Colors:
     GREEN = '\033[92m'
@@ -40,27 +55,47 @@ class Colors:
     RESET = '\033[0m'
     UNDERLINE = '\033[4m'
 
+def _print_safe(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 def print_header(text):
     """Affiche un en-tête formaté"""
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{text:^70}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}\n")
+    _print_safe(f"\n{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}")
+    _print_safe(f"{Colors.BOLD}{Colors.BLUE}{text:^70}{Colors.RESET}")
+    _print_safe(f"{Colors.BOLD}{Colors.BLUE}{'='*70}{Colors.RESET}\n")
 
 def print_success(text):
     """Affiche un message de succès"""
-    print(f"{Colors.GREEN}✓{Colors.RESET} {text}")
+    try:
+        print(f"{Colors.GREEN}✓{Colors.RESET} {text}")
+    except UnicodeEncodeError:
+        _print_safe(f"{Colors.GREEN}[OK]{Colors.RESET} {text}")
 
 def print_error(text):
     """Affiche un message d'erreur"""
-    print(f"{Colors.RED}✗{Colors.RESET} {text}")
+    try:
+        print(f"{Colors.RED}✗{Colors.RESET} {text}")
+    except UnicodeEncodeError:
+        _print_safe(f"{Colors.RED}[X]{Colors.RESET} {text}")
 
 def print_warning(text):
     """Affiche un message d'avertissement"""
-    print(f"{Colors.YELLOW}⚠{Colors.RESET} {text}")
+    try:
+        print(f"{Colors.YELLOW}⚠{Colors.RESET} {text}")
+    except UnicodeEncodeError:
+        _print_safe(f"{Colors.YELLOW}[!]{Colors.RESET} {text}")
 
 def print_info(text):
     """Affiche un message d'information"""
-    print(f"{Colors.CYAN}ℹ{Colors.RESET} {text}")
+    try:
+        print(f"{Colors.CYAN}ℹ{Colors.RESET} {text}")
+    except UnicodeEncodeError:
+        _print_safe(f"{Colors.CYAN}[i]{Colors.RESET} {text}")
 
 def check_module(module_name, required=True, version_attr='__version__', optional_reason=""):
     """
@@ -278,7 +313,8 @@ def check_local_modules():
 
 def main():
     """Fonction principale de vérification"""
-    
+    _configure_stdio_encoding()
+
     # En-tête
     print_header("VÉRIFICATION DE L'INSTALLATION NPOAP")
     
@@ -344,6 +380,7 @@ def main():
         ('phoebe', False, "Étoiles binaires (PHOEBE2)"),
         ('rebound', False, "Simulation N-body"),
         ('ultranest', False, "Nested sampling bayésien"),
+        ('stdpipe', False, "STDPipe (photométrie transitoires)"),
     ]
     missing_physics_bundle = False
     for module_info in optional_modules:
@@ -365,7 +402,7 @@ def main():
             missing_physics_bundle = True
     if missing_physics_bundle:
         print_info(
-            "Indice : PHOEBE, rebound et ultranest sont listés dans requirements_install_optionnels.txt — "
+            "Indice : PHOEBE, rebound, ultranest et stdpipe sont listés dans requirements_install_optionnels.txt — "
             "pip install -r requirements_install_optionnels.txt (astroenv) ou install_optionnels.bat."
         )
     
@@ -412,9 +449,15 @@ def main():
         print(f"  {Colors.CYAN}Composants Prospector:{Colors.RESET}")
         for component, available in prospector_results['components'].items():
             if available:
-                print(f"    {Colors.GREEN}✓{Colors.RESET} {component}")
+                try:
+                    print(f"    {Colors.GREEN}✓{Colors.RESET} {component}")
+                except UnicodeEncodeError:
+                    _print_safe(f"    {Colors.GREEN}[OK]{Colors.RESET} {component}")
             else:
-                print(f"    {Colors.YELLOW}⚠{Colors.RESET} {component} non disponible")
+                try:
+                    print(f"    {Colors.YELLOW}⚠{Colors.RESET} {component} non disponible")
+                except UnicodeEncodeError:
+                    _print_safe(f"    {Colors.YELLOW}[!]{Colors.RESET} {component} non disponible")
         
         # Afficher SPS_HOME
         if prospector_results['SPS_HOME']:
@@ -514,7 +557,10 @@ def main():
     print()
     if required_ok == required_total and not local_results['errors']:
         print(f"{Colors.BOLD}{Colors.GREEN}{'='*70}{Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.GREEN}✓ Installation NPOAP vérifiée avec succès!{Colors.RESET}")
+        try:
+            print(f"{Colors.BOLD}{Colors.GREEN}✓ Installation NPOAP vérifiée avec succès!{Colors.RESET}")
+        except UnicodeEncodeError:
+            _print_safe(f"{Colors.BOLD}{Colors.GREEN}[OK] Installation NPOAP verifiee avec succes!{Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.GREEN}{'='*70}{Colors.RESET}")
         if warnings:
             print(f"\n{Colors.YELLOW}Note: Certaines fonctionnalités optionnelles ne sont pas disponibles,{Colors.RESET}")
@@ -522,7 +568,10 @@ def main():
         return 0
     else:
         print(f"{Colors.BOLD}{Colors.RED}{'='*70}{Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.RED}✗ Installation incomplète - Veuillez corriger les erreurs ci-dessus{Colors.RESET}")
+        try:
+            print(f"{Colors.BOLD}{Colors.RED}✗ Installation incomplète - Veuillez corriger les erreurs ci-dessus{Colors.RESET}")
+        except UnicodeEncodeError:
+            _print_safe(f"{Colors.BOLD}{Colors.RED}[X] Installation incomplete - Corrigez les erreurs ci-dessus{Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.RED}{'='*70}{Colors.RESET}")
         if errors:
             print(f"\n{Colors.YELLOW}Pour installer les dépendances manquantes:{Colors.RESET}")

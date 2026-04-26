@@ -631,7 +631,9 @@ cd /d "%INSTALL_DIR%"
 
 if exist "test_installation.py" (
     echo Execution des tests...
+    set "PYTHONUTF8=1"
     python test_installation.py 1> "%TEMP%\npoap_test_inst.log" 2>&1
+    set "PYTHONUTF8="
     set "TEST_INST_EC=!errorlevel!"
     type "%TEMP%\npoap_test_inst.log"
     type "%TEMP%\npoap_test_inst.log" >> "!INSTALL_COMPLET_LOG!"

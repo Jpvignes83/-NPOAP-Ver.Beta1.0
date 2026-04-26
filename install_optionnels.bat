@@ -316,11 +316,34 @@ if errorlevel 1 (
     exit /b 0
 )
 
-python -m pip install --prefer-binary -r "requirements_install_optionnels.txt"
+python -m pip install --prefer-binary -r "requirements_install_optionnels.txt" 1> "%TEMP%\npoap_pip_optionnels.log" 2>&1
 set "RC_OPT=!errorlevel!"
+type "%TEMP%\npoap_pip_optionnels.log"
+echo.>> "%LOG_FILE%"
+echo ----- pip install -r requirements_install_optionnels.txt ----- >> "%LOG_FILE%"
+type "%TEMP%\npoap_pip_optionnels.log" >> "%LOG_FILE%"
 if "!RC_OPT!"=="0" (
     echo [OK] requirements_install_optionnels.txt installe
     echo [OK] requirements_install_optionnels.txt installe>> "%LOG_FILE%"
+    python -c "import stdpipe" 1>> "%TEMP%\npoap_stdpipe_check.log" 2>&1
+    if errorlevel 1 (
+        echo [WARN] stdpipe non importable apres pip - tentative: pip install --prefer-binary stdpipe
+        echo [WARN] stdpipe non importable - relance pip install stdpipe>> "%LOG_FILE%"
+        python -m pip install --prefer-binary stdpipe 1>> "%TEMP%\npoap_pip_stdpipe_retry.log" 2>&1
+        type "%TEMP%\npoap_pip_stdpipe_retry.log"
+        echo.>> "%LOG_FILE%"
+        echo ----- pip install stdpipe ^(retry^) ----- >> "%LOG_FILE%"
+        type "%TEMP%\npoap_pip_stdpipe_retry.log" >> "%LOG_FILE%"
+        python -c "import stdpipe; print('stdpipe OK')" 1>> "%TEMP%\npoap_stdpipe_check2.log" 2>&1
+        if errorlevel 1 (
+            echo [ECHEC] stdpipe toujours non importable - voir logs ci-dessus et docs STDPipe
+            echo [ECHEC] stdpipe import impossible apres retry>> "%LOG_FILE%"
+            set /a FAIL_COUNT+=1
+        ) else (
+            echo [OK] stdpipe importable apres retry
+            echo [OK] stdpipe importable apres retry>> "%LOG_FILE%"
+        )
+    )
 ) else (
     echo [ECHEC] pip install requirements_install_optionnels.txt ^(code !RC_OPT!^)
     echo [ECHEC] pip install requirements_install_optionnels.txt ^(code !RC_OPT!^)>> "%LOG_FILE%"
