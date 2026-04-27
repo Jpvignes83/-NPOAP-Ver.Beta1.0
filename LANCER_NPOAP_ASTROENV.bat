@@ -50,6 +50,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Mode par defaut: compatibilite (autorise user-site) pour eviter les blocages
+REM si astroenv en ProgramData est non-ecrivable sans droits admin.
+REM Pour forcer l'isolation stricte: set NPOAP_STRICT_ENV=1 avant lancement.
+if /i "%NPOAP_STRICT_ENV%"=="1" (
+    set "PYTHONNOUSERSITE=1"
+    set "PIP_USER=0"
+)
+
+REM Backend Prospector: WSL par defaut (FSPS Linux), surchargeable via variable d'environnement.
+if not defined NPOAP_PROSPECTOR_BACKEND set "NPOAP_PROSPECTOR_BACKEND=wsl"
+
 echo Lancement de NPOAP...
 echo.
 
