@@ -14,5 +14,5 @@ pause
 exit /b !EX!
 
 :run_ps
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" %*
+start "NPOAP Prospector FSPS" /wait powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" -InstallFSPS %*
 exit /b %ERRORLEVEL%

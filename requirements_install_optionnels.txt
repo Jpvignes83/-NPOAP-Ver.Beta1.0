@@ -31,6 +31,8 @@ sncosmo>=2.10,<3
 iminuit>=2.0
 
 # === STDPipe + processus gaussiens (celerite2) ===
+# pkg_resources requis par certaines versions de stdpipe
+setuptools>=65,<81
 stdpipe
 scikit-learn
 celerite2

@@ -147,6 +147,20 @@ if (-not $pythonOk) {
     }
 }
 Write-Info "Python: $pythonPath"
+$env:PIP_USER = "0"
+$env:PYTHONNOUSERSITE = "1"
+
+# Verifier que l'environnement est ecrivable (sinon pip bascule en --user et casse l'isolation conda)
+$siteRaw = (& $pythonPath -c "import os,site; p=site.getsitepackages()[0]; print('OK' if os.access(p, os.W_OK) else p)" 2>&1)
+$siteCode = $LASTEXITCODE
+$siteText = ($siteRaw | ForEach-Object { $_.ToString() }) -join "`n"
+if ($siteCode -ne 0 -or $siteText.Trim() -ne "OK") {
+    $target = if ([string]::IsNullOrWhiteSpace($siteText)) { "(site-packages non detecte)" } else { $siteText.Trim() }
+    Write-ErrorMsg "ERREUR: L'environnement '$CondaEnv' n'est pas ecrivable pour pip."
+    Write-ErrorMsg "  Site-packages cible: $target"
+    Write-ErrorMsg "  Lancez ce script en tant qu'administrateur OU corrigez les permissions de l'env conda."
+    exit 1
+}
 
 # Echecs d'import Python -> stderr. Sous Windows PowerShell 5.x, avec
 # $ErrorActionPreference Stop, ce stderr devient NativeCommandError et
@@ -200,7 +214,7 @@ $baseDeps = @(
 
 foreach ($dep in $baseDeps) {
     Write-Info "  Installation de $dep..."
-    & $pythonPath -m pip install $dep --quiet --upgrade
+    & $pythonPath -m pip install $dep --quiet --upgrade --no-user
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "  ⚠ Erreur lors de l'installation de $dep"
     } else {
@@ -239,7 +253,7 @@ if ($sedpyCheck -eq "OK") {
 
 # Installer depuis GitHub
 Write-Info "  Installation depuis GitHub: git+https://github.com/bd-j/sedpy.git"
-& $pythonPath -m pip install "git+https://github.com/bd-j/sedpy.git" --no-cache-dir
+& $pythonPath -m pip install "git+https://github.com/bd-j/sedpy.git" --no-cache-dir --no-user
 if ($LASTEXITCODE -ne 0) {
     Write-ErrorMsg "  ✗ Erreur lors de l'installation de sedpy depuis GitHub"
     Write-ErrorMsg "  Vérifiez que Git est correctement installé et dans le PATH"
@@ -274,7 +288,7 @@ $prospectorDeps = @(
 
 foreach ($dep in $prospectorDeps) {
     Write-Info "  Installation de $dep..."
-    & $pythonPath -m pip install $dep --quiet --upgrade
+    & $pythonPath -m pip install $dep --quiet --upgrade --no-user
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "  ⚠ Erreur lors de l'installation de $dep"
     } else {
@@ -338,25 +352,100 @@ if ($InstallFSPS) {
                 Push-Location $tempDir.FullName
                 
                 Write-Info "  Clonage de python-fsps depuis GitHub..."
-                git clone https://github.com/dfm/python-fsps.git 2>&1 | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Échec du clonage de python-fsps"
+                $prevEA_git = $ErrorActionPreference
+                $nativeVar = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+                if ($nativeVar) { $prevNative = $nativeVar.Value }
+                $ErrorActionPreference = "Continue"
+                if ($nativeVar) { $script:PSNativeCommandUseErrorActionPreference = $false }
+                try {
+                    # Shallow clone pour accelerer fortement le telechargement.
+                    $cloneLines = @(& git clone --depth 1 --single-branch https://github.com/dfm/python-fsps.git 2>&1)
+                    $cloneCode = $LASTEXITCODE
+                } finally {
+                    if ($nativeVar) { $script:PSNativeCommandUseErrorActionPreference = $prevNative }
+                    $ErrorActionPreference = $prevEA_git
+                }
+                if ($cloneCode -ne 0) {
+                    $cloneText = ($cloneLines | ForEach-Object { $_.ToString() }) -join "`n"
+                    throw "Échec du clonage de python-fsps (code $cloneCode)`n$cloneText"
                 }
                 
                 Set-Location python-fsps
                 
                 # CRUCIAL: Initialiser les sous-modules Git
                 Write-Info "  Initialisation des sous-modules Git (CRUCIAL!)..."
-                git submodule update --init --recursive
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Échec de l'initialisation des sous-modules Git"
+                $prevEA_git2 = $ErrorActionPreference
+                $nativeVar2 = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+                if ($nativeVar2) { $prevNative2 = $nativeVar2.Value }
+                $ErrorActionPreference = "Continue"
+                if ($nativeVar2) { $script:PSNativeCommandUseErrorActionPreference = $false }
+                try {
+                    Write-Info "    -> Telechargement SHALLOW des sous-modules en cours (plus rapide)..."
+                    & git submodule update --init --recursive --depth 1 --progress
+                    $submoduleCode = $LASTEXITCODE
+                } finally {
+                    if ($nativeVar2) { $script:PSNativeCommandUseErrorActionPreference = $prevNative2 }
+                    $ErrorActionPreference = $prevEA_git2
+                }
+                if ($submoduleCode -ne 0) {
+                    Write-Warning "    -> Echec du mode shallow, nouvelle tentative en mode complet..."
+                    & git submodule update --init --recursive --progress
+                    $submoduleCodeFull = $LASTEXITCODE
+                    if ($submoduleCodeFull -ne 0) {
+                        $submoduleText = "git submodule update --init --recursive (--depth 1 puis complet)"
+                        throw "Échec de l'initialisation des sous-modules Git (code $submoduleCodeFull)`n$submoduleText"
+                    }
                 }
                 Write-Success "  ✓ Sous-modules Git initialisés"
                 
                 # Installer FSPS
                 Write-Info "  Compilation et installation de FSPS (peut prendre 5-15 minutes)..."
-                $env:FC = "gfortran"
-                & $pythonPath -m pip install . --no-cache-dir
+                $gfortranExe = $gfortranPath.Source
+                $mingwBin = Split-Path -Parent $gfortranExe
+                $gccExe = Join-Path $mingwBin "gcc.exe"
+                $gxxExe = Join-Path $mingwBin "g++.exe"
+                $gccVerDir = Join-Path $mingwBin "..\lib\gcc\x86_64-w64-mingw32\13.2.0"
+                $mingwTargetLib = Join-Path $mingwBin "..\x86_64-w64-mingw32\lib"
+
+                $prevPath = $env:PATH
+                $prevCC = $env:CC
+                $prevCXX = $env:CXX
+                $prevFC = $env:FC
+                $prevCMakeFortran = $env:CMAKE_Fortran_COMPILER
+                $prevCMakeArgs = $env:CMAKE_ARGS
+                $prevCMakeGenerator = $env:CMAKE_GENERATOR
+                $prevLibraryPath = $env:LIBRARY_PATH
+                $prevTmp = $env:TMP
+                $prevTemp = $env:TEMP
+                try {
+                    # Forcer un toolchain coherent MinGW (evite le couple MSVC + gfortran qui echoue).
+                    $env:PATH = "$mingwBin;$env:PATH"
+                    if (Test-Path $gccExe) { $env:CC = $gccExe }
+                    if (Test-Path $gxxExe) { $env:CXX = $gxxExe }
+                    $env:FC = $gfortranExe
+                    $env:CMAKE_Fortran_COMPILER = $gfortranExe
+                    $env:CMAKE_GENERATOR = "Ninja"
+                    $env:LIBRARY_PATH = "$gccVerDir;$mingwTargetLib;$env:LIBRARY_PATH"
+                    $env:CMAKE_ARGS = "-DCMAKE_C_COMPILER=""$($env:CC)"" -DCMAKE_CXX_COMPILER=""$($env:CXX)"" -DCMAKE_Fortran_COMPILER=""$gfortranExe"""
+                    # Evite l'erreur CMake "Invalid character escape '\U'" avec chemins Windows en backslashes.
+                    $cmakeTmp = "C:/npoap_tmp"
+                    New-Item -ItemType Directory -Force -Path $cmakeTmp | Out-Null
+                    $env:TMP = $cmakeTmp
+                    $env:TEMP = $cmakeTmp
+
+                    & $pythonPath -m pip install . --no-cache-dir --no-user
+                } finally {
+                    $env:PATH = $prevPath
+                    $env:CC = $prevCC
+                    $env:CXX = $prevCXX
+                    $env:FC = $prevFC
+                    $env:CMAKE_Fortran_COMPILER = $prevCMakeFortran
+                    $env:CMAKE_ARGS = $prevCMakeArgs
+                    $env:CMAKE_GENERATOR = $prevCMakeGenerator
+                    $env:LIBRARY_PATH = $prevLibraryPath
+                    $env:TMP = $prevTmp
+                    $env:TEMP = $prevTemp
+                }
                 if ($LASTEXITCODE -ne 0) {
                     throw "Échec de l'installation de FSPS"
                 }
@@ -464,11 +553,11 @@ $useFullPipProspector = ($TryPipProspectorWithDeps -and $InstallFSPS -and $gfort
 
 if ($useFullPipProspector) {
     Write-Warning "  Mode expert : pip avec resolution des dependances (-TryPipProspectorWithDeps)..."
-    & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir
+    & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-user
     $prospectorOk = ($LASTEXITCODE -eq 0)
     if (-not $prospectorOk) {
         Write-Warning "  Echec pip complet ; essai --no-deps..."
-        & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps
+        & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps --no-user
         if ($LASTEXITCODE -ne 0) {
             Write-ErrorMsg "  ✗ Erreur lors de l'installation de Prospector"
             exit 1
@@ -480,7 +569,7 @@ if ($useFullPipProspector) {
     if (-not $gfortranForProspector) {
         Write-Warning "  gfortran absent : etape 5 n'installera pas FSPS compile (stubs). WSL recommande pour FSPS complet."
     }
-    & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps
+    & $pythonPath -m pip install "git+https://github.com/bd-j/prospector.git" --no-cache-dir --no-deps --no-user
     if ($LASTEXITCODE -ne 0) {
         Write-ErrorMsg "  ✗ Erreur lors de l'installation de Prospector (--no-deps)"
         Write-ErrorMsg "  Verifiez Git, le reseau et sedpy (etape 3)."

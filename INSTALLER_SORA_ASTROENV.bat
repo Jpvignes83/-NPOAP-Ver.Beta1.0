@@ -22,6 +22,7 @@ if errorlevel 1 (
 echo.
 echo Installation via pip (peut prendre plusieurs minutes ; dépendances réseau)...
 python -m pip install --upgrade pip
+python -m pip install --upgrade "setuptools<81"
 python -m pip install "sora-astro"
 
 if errorlevel 1 (

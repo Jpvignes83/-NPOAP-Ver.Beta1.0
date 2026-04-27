@@ -574,8 +574,8 @@ if !errorLevel! neq 0 (
     exit /b 1
 )
 
-echo Mise a jour de pip, setuptools, wheel...
-python -m pip install --upgrade pip setuptools wheel 1> "%TEMP%\npoap_pip_up.log" 2>&1
+echo Mise a jour de pip, setuptools ^(version compatible STDPipe^) et wheel...
+python -m pip install --upgrade pip "setuptools<81" wheel 1> "%TEMP%\npoap_pip_up.log" 2>&1
 set "PIP_UP_EC=!errorlevel!"
 type "%TEMP%\npoap_pip_up.log"
 type "%TEMP%\npoap_pip_up.log" >> "!INSTALL_COMPLET_LOG!"
@@ -602,20 +602,23 @@ echo %BLUE%=== ETAPE 7: Creation des scripts de lancement ===%RESET%
 >>"!INSTALL_COMPLET_LOG!" echo === ETAPE 7: Creation des scripts de lancement ===
 echo.
 
-REM Script de lancement principal : LANCEMENT.bat (fourni a cote de installation.bat^)
-if exist "%~dp0LANCEMENT.bat" (
-    copy /Y "%~dp0LANCEMENT.bat" "%INSTALL_DIR%\LANCEMENT.bat" >nul
-    echo %GREEN%Script de lancement copie: %INSTALL_DIR%\LANCEMENT.bat%RESET%
+REM Lanceur unique: LANCER_NPOAP_ASTROENV.bat
+if exist "%INSTALL_DIR%\LANCEMENT.bat" del /f /q "%INSTALL_DIR%\LANCEMENT.bat" >nul 2>&1
+if exist "%INSTALL_DIR%\lancement.bat" del /f /q "%INSTALL_DIR%\lancement.bat" >nul 2>&1
+
+if exist "%~dp0LANCER_NPOAP_ASTROENV.bat" (
+    copy /Y "%~dp0LANCER_NPOAP_ASTROENV.bat" "%INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat" >nul
+    echo %GREEN%Script de lancement copie: %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat%RESET%
 ) else (
-    echo %YELLOW%LANCEMENT.bat absent du package - generation d'un lanceur minimal vers %ENV_NAME%...%RESET%
+    echo %YELLOW%LANCER_NPOAP_ASTROENV.bat absent du package - generation d'un lanceur minimal vers %ENV_NAME%...%RESET%
     (
         echo @echo off
         echo call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
         echo cd /d "%INSTALL_DIR%"
         echo python main.py
         echo pause
-    ) > "%INSTALL_DIR%\LANCEMENT.bat"
-    echo %GREEN%Script de lancement cree: %INSTALL_DIR%\LANCEMENT.bat%RESET%
+    ) > "%INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat"
+    echo %GREEN%Script de lancement cree: %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat%RESET%
 )
 echo.
 
@@ -685,7 +688,7 @@ echo.
 echo Journal complet de cette installation: !INSTALL_COMPLET_LOG!
 echo.
 echo Pour lancer NPOAP, utilisez:
-echo   %INSTALL_DIR%\LANCEMENT.bat
+echo   %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat
 echo.
 echo Ou depuis la ligne de commande:
 echo   call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
@@ -704,7 +707,7 @@ echo   Astrometry.net dans WSL ........ install_astrometry_wsl.bat
 echo   KBMOD sous WSL/Linux ........... install_kbmod_wsl.bat
 echo   Prospector Windows (astroenv) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat / .ps1
 echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
-echo   SORA seul (reinstall) .......... INSTALLER_SORA_ASTROENV.bat  (deja dans requirements_install_core.txt)
+echo   SORA ^(depannage seul^) ....... INSTALLER_SORA_ASTROENV.bat  ^(sinon : requirements_install_optionnels.txt^)
 echo.
 echo Ouvrez le fichier texte LISTE_INSTALL_OPTIONNELS.txt pour le meme tableau.
 echo.

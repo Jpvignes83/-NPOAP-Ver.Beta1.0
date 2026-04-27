@@ -316,6 +316,12 @@ if errorlevel 1 (
     exit /b 0
 )
 
+python -m pip install --upgrade "setuptools<81" 1> "%TEMP%\npoap_setuptools_fix.log" 2>&1
+type "%TEMP%\npoap_setuptools_fix.log"
+echo.>> "%LOG_FILE%"
+echo ----- pip install --upgrade setuptools^<81 ----- >> "%LOG_FILE%"
+type "%TEMP%\npoap_setuptools_fix.log" >> "%LOG_FILE%"
+
 python -m pip install --prefer-binary -r "requirements_install_optionnels.txt" 1> "%TEMP%\npoap_pip_optionnels.log" 2>&1
 set "RC_OPT=!errorlevel!"
 type "%TEMP%\npoap_pip_optionnels.log"
