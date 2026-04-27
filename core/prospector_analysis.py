@@ -410,22 +410,24 @@ try:
         logger.error(f"[PROSPECTOR] Traceback complet:\n{traceback.format_exc()}")
         raise
     
-    # Import FSPS pour les templates SSP (optionnel - nécessite installation manuelle)
+    # Import FSPS pour les templates SSP.
+    # Si backend WSL demandé, on évite la vérification locale Windows (bruyante/inutile).
     FSPS_AVAILABLE = False
-    logger.info("[PROSPECTOR] Vérification de FSPS...")
-    try:
-        import fsps
-        FSPS_AVAILABLE = True
-        logger.info("[PROSPECTOR] ✓ FSPS disponible pour les templates SSP")
-        logger.info(f"[PROSPECTOR] Version FSPS: {getattr(fsps, '__version__', 'inconnue')}")
-        logger.info(f"[PROSPECTOR] Emplacement FSPS: {getattr(fsps, '__file__', 'inconnu')}")
-    except ImportError as e:
-        FSPS_AVAILABLE = False
-        logger.warning(f"[PROSPECTOR] ⚠ FSPS n'est pas disponible: {e}")
-        logger.warning("[PROSPECTOR] Templates SSP ne fonctionneront pas")
-        logger.warning("[PROSPECTOR] Pour installer FSPS: voir https://dfm.io/python-fsps/current/installation/")
-        logger.warning("[PROSPECTOR] Note: FSPS nécessite CMake et un compilateur Fortran")
-        logger.warning("[PROSPECTOR] Prospector peut fonctionner avec d'autres bibliothèques SSP si disponibles")
+    if PROSPECTOR_BACKEND != "wsl":
+        logger.info("[PROSPECTOR] Vérification de FSPS...")
+        try:
+            import fsps
+            FSPS_AVAILABLE = True
+            logger.info("[PROSPECTOR] ✓ FSPS disponible pour les templates SSP")
+            logger.info(f"[PROSPECTOR] Version FSPS: {getattr(fsps, '__version__', 'inconnue')}")
+            logger.info(f"[PROSPECTOR] Emplacement FSPS: {getattr(fsps, '__file__', 'inconnu')}")
+        except ImportError as e:
+            FSPS_AVAILABLE = False
+            logger.warning(f"[PROSPECTOR] ⚠ FSPS n'est pas disponible: {e}")
+            logger.warning("[PROSPECTOR] Templates SSP ne fonctionneront pas")
+            logger.warning("[PROSPECTOR] Pour installer FSPS: voir https://dfm.io/python-fsps/current/installation/")
+            logger.warning("[PROSPECTOR] Note: FSPS nécessite CMake et un compilateur Fortran")
+            logger.warning("[PROSPECTOR] Prospector peut fonctionner avec d'autres bibliothèques SSP si disponibles")
 
     # Backend alternatif: Prospector+FSPS via WSL (venv Linux)
     if not FSPS_AVAILABLE and PROSPECTOR_BACKEND == "wsl":
