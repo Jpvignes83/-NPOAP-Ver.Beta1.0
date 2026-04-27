@@ -72,6 +72,7 @@ class HomeTab(ttk.Frame):
                 "sensor_height_mm": eq.get("sensor_height_mm", ""),
                 "binning": eq.get("binning", 1),  # 1, 2, 3 ou 4 (1x1, 2x2, 3x3, 4x4)
                 "pixel_size_um": eq.get("pixel_size_um", ""),
+                "camera_gain_e_per_adu": eq.get("camera_gain_e_per_adu"),
             },
             "astrometry_api_key": "",
             "affiliations": [],  # Liste de dicts: [{"text": "...", "selected": bool}]
@@ -97,6 +98,8 @@ class HomeTab(ttk.Frame):
 
             except Exception as e:
                 messagebox.showwarning("Config", f"Erreur lecture config.json : {e}")
+
+        config.refresh_camera_gain_from_config_json()
 
     def save_config(self):
         """
@@ -168,6 +171,7 @@ class HomeTab(ttk.Frame):
             # Met à jour config.AFFILIATIONS (en mémoire)
             config.AFFILIATIONS = self.config_data.get("affiliations", [])
             importlib.reload(config)
+            config.refresh_camera_gain_from_config_json()
 
             messagebox.showinfo("Succès", "Configuration sauvegardée.")
         except Exception as e:
