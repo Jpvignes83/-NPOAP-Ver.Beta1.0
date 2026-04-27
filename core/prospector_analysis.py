@@ -8,6 +8,9 @@ import logging
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING, Any
+import json
+import subprocess
+import tempfile
 from astropy import units as u
 from astropy.io import fits
 
@@ -19,6 +22,55 @@ logger.info("[PROSPECTOR_MODULE] Module core.prospector_analysis chargé")
 # Prospector essaie d'utiliser SPS_HOME lors de l'import, donc il doit être défini avant
 import os
 import pathlib
+from utils.wsl_utils import windows_path_to_wsl
+
+PROSPECTOR_BACKEND = os.environ.get("NPOAP_PROSPECTOR_BACKEND", "windows").strip().lower() or "windows"
+PROSPECTOR_WSL_AVAILABLE = False
+
+
+def _resolve_wsl_python() -> str:
+    """Retourne le Python du venv WSL Prospector."""
+    custom = os.environ.get("NPOAP_PROSPECTOR_WSL_PYTHON", "").strip()
+    if custom:
+        return custom
+    # Valeur alignée avec Installation_fsps/install_prospector_wsl.sh
+    return "$HOME/.local/share/npoap-prospector-wsl/venv/bin/python3"
+
+
+def _resolve_wsl_sps_home() -> str:
+    """Retourne SPS_HOME côté WSL."""
+    custom = os.environ.get("NPOAP_PROSPECTOR_WSL_SPS_HOME", "").strip()
+    if custom:
+        return custom
+    return "$HOME/.local/share/fsps"
+
+
+def _probe_wsl_prospector() -> Tuple[bool, str]:
+    """Vérifie si Prospector+FSPS sont utilisables côté WSL."""
+    if PROSPECTOR_BACKEND != "wsl":
+        return False, "backend WSL non demandé"
+    wsl_python = _resolve_wsl_python()
+    wsl_sps_home = _resolve_wsl_sps_home()
+    probe_cmd = (
+        f'PY="{wsl_python}"; '
+        f'export SPS_HOME="{wsl_sps_home}"; '
+        '[ -x "${PY/#\\~/$HOME}" ] || [ -x "$PY" ] || exit 21; '
+        '"${PY/#\\~/$HOME}" -c "import prospect, fsps; print(getattr(prospect, \'__version__\', \'?\'), getattr(fsps, \'__version__\', \'?\'))"'
+    )
+    try:
+        cp = subprocess.run(
+            ["wsl", "-e", "bash", "-lc", probe_cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        if cp.returncode == 0:
+            return True, (cp.stdout or "").strip()
+        err = (cp.stderr or cp.stdout or "").strip()
+        return False, f"rc={cp.returncode} {err}"
+    except Exception as e:
+        return False, str(e)
 
 if 'SPS_HOME' not in os.environ:
     sps_home_default = pathlib.Path.home() / '.local' / 'share' / 'fsps'
@@ -374,6 +426,17 @@ try:
         logger.warning("[PROSPECTOR] Pour installer FSPS: voir https://dfm.io/python-fsps/current/installation/")
         logger.warning("[PROSPECTOR] Note: FSPS nécessite CMake et un compilateur Fortran")
         logger.warning("[PROSPECTOR] Prospector peut fonctionner avec d'autres bibliothèques SSP si disponibles")
+
+    # Backend alternatif: Prospector+FSPS via WSL (venv Linux)
+    if not FSPS_AVAILABLE and PROSPECTOR_BACKEND == "wsl":
+        ok_wsl, details = _probe_wsl_prospector()
+        PROSPECTOR_WSL_AVAILABLE = ok_wsl
+        if ok_wsl:
+            FSPS_AVAILABLE = True
+            logger.info("[PROSPECTOR] ✓ Backend WSL actif (%s)", details)
+            logger.info("[PROSPECTOR] FSPS sera exploité via WSL")
+        else:
+            logger.warning("[PROSPECTOR] Backend WSL indisponible: %s", details)
     
     # Import pour la calibration spectroscopique
     try:
@@ -484,9 +547,10 @@ class ProspectorAnalyzer:
         self.fitting_result = None
         self.sed_model = None
         self.use_fsps = use_fsps
+        self.prospector_backend = "wsl" if (PROSPECTOR_BACKEND == "wsl" and PROSPECTOR_WSL_AVAILABLE) else "windows"
         
         # Initialiser l'objet SPS si FSPS est disponible
-        if use_fsps and FSPS_AVAILABLE:
+        if use_fsps and FSPS_AVAILABLE and self.prospector_backend != "wsl":
             try:
                 # FastStepBasis est le wrapper Prospector pour FSPS
                 # Il prend en paramètre les options FSPS
@@ -502,6 +566,8 @@ class ProspectorAnalyzer:
                 self.sps = None
                 if not FSPS_AVAILABLE:
                     logger.error("FSPS n'est pas installé. Installez-le avec: pip install fsps")
+        elif self.prospector_backend == "wsl":
+            logger.info("Objet SPS local non initialisé: backend Prospector via WSL")
         
     def load_galaxy_spectrum(self, file_path: Union[str, Path]) -> Any:
         """
@@ -852,6 +918,51 @@ class ProspectorAnalyzer:
         
         logger.info(f"Données d'observation préparées: {len(wavelength)} points ({'spectroscopie' if len(wavelength) >= 20 else 'photométrie'})")
         return obs
+
+    def _fit_stellar_properties_wsl(
+        self,
+        sed_data: Dict,
+        n_walkers: int = 100,
+        n_steps: int = 1000,
+    ) -> Dict:
+        """Exécute une inférence Prospector via le venv WSL."""
+        wsl_python = _resolve_wsl_python()
+        wsl_sps_home = _resolve_wsl_sps_home()
+        worker_path = Path(__file__).resolve().parent / "prospector_wsl_worker.py"
+        if not worker_path.exists():
+            raise FileNotFoundError(f"Worker WSL introuvable: {worker_path}")
+
+        with tempfile.TemporaryDirectory(prefix="npoap_wsl_fit_") as tmpdir:
+            in_json = Path(tmpdir) / "input.json"
+            out_json = Path(tmpdir) / "output.json"
+            payload = {
+                "sed_data": sed_data,
+                "n_walkers": int(n_walkers),
+                "n_steps": int(n_steps),
+            }
+            in_json.write_text(json.dumps(payload), encoding="utf-8")
+
+            in_wsl = windows_path_to_wsl(in_json)
+            out_wsl = windows_path_to_wsl(out_json)
+            worker_wsl = windows_path_to_wsl(worker_path)
+
+            cmd = (
+                f'PY="{wsl_python}"; '
+                f'export SPS_HOME="{wsl_sps_home}"; '
+                f'"${{PY/#\\~/$HOME}}" "{worker_wsl}" "{in_wsl}" "{out_wsl}"'
+            )
+            cp = subprocess.run(
+                ["wsl", "-e", "bash", "-lc", cmd],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if cp.returncode != 0:
+                err = (cp.stderr or cp.stdout or "").strip()
+                raise RuntimeError(f"Échec worker Prospector WSL (code {cp.returncode}): {err}")
+            if not out_json.exists():
+                raise RuntimeError("Le worker WSL n'a pas produit de sortie JSON.")
+            return json.loads(out_json.read_text(encoding="utf-8"))
     
     def fit_stellar_properties(self,
                               sed_data: Dict,
@@ -884,6 +995,14 @@ class ProspectorAnalyzer:
             raise ImportError("Prospector n'est pas installé")
         
         try:
+            if self.prospector_backend == "wsl":
+                logger.info("Inférence Prospector déléguée au backend WSL")
+                return self._fit_stellar_properties_wsl(
+                    sed_data,
+                    n_walkers=n_walkers,
+                    n_steps=n_steps,
+                )
+
             logger.info(f"Démarrage de l'inférence Prospector (Sampler: {sampler_type})")
             
             # 1. Configurer le modèle Prospector
@@ -1088,6 +1207,11 @@ class ProspectorAnalyzer:
             return "Inférence non réussie - voir les logs pour plus de détails"
         
         summary = "=== Propriétés Stellaires Inférées ===\n\n"
+        backend = results.get("backend")
+        if backend:
+            summary += f"Backend: {backend}\n"
+        if results.get("message"):
+            summary += f"{results.get('message')}\n\n"
         
         params = results.get('parameters', {})
         uncertainties = results.get('uncertainties', {})

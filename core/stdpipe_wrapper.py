@@ -29,7 +29,13 @@ stdpipe_catalogues = None
 # Dans certains environnements conda/pip, setuptools peut manquer.
 STDPIPE_PKG_RESOURCES_OK = True
 try:
-    import pkg_resources  # type: ignore  # noqa: F401
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="pkg_resources is deprecated as an API.*",
+            category=UserWarning,
+        )
+        import pkg_resources  # type: ignore  # noqa: F401
 except ImportError:
     STDPIPE_PKG_RESOURCES_OK = False
     logger.warning(
@@ -114,9 +120,22 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 import astropy.units as u
 
-# Masques transitoires (saturation, L.A.Cosmic, trainées) — dépendances requises du cœur photométrique
+# Masques transitoires (saturation, L.A.Cosmic, trainées)
 import astroscrappy
-import astride.detect as astride_detect
+ASTRIDE_AVAILABLE = False
+astride_detect = None
+try:
+    import astride.detect as astride_detect
+    ASTRIDE_AVAILABLE = True
+except Exception as e:
+    # ASTRiDE peut casser avec certaines versions de photutils.
+    # On dégrade proprement: pas de masquage des trainées, mais le module reste fonctionnel.
+    ASTRIDE_AVAILABLE = False
+    logger.warning(
+        "ASTRiDE indisponible (masque des trainées désactivé): %s. "
+        "Essayez un photutils compatible avec astride si nécessaire.",
+        e,
+    )
 
 # Import synphot pour conversion de filtres
 try:
@@ -305,6 +324,10 @@ def build_satellite_trail_mask(
     cleanup_dir: Optional[str] = None
     path = temp_fits_path
     try:
+        if not ASTRIDE_AVAILABLE or astride_detect is None:
+            logger.info("ASTRiDE indisponible: masque des trainées ignoré.")
+            return empty
+
         if path is None:
             cleanup_dir = tempfile.mkdtemp(prefix="npoap_astride_")
             path = str(Path(cleanup_dir) / "temp_image.fits")
