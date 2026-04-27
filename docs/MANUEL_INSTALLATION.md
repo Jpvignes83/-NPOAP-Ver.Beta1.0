@@ -2,10 +2,22 @@
 
 **NPOAP - Nouvelle Plateforme d'Observation et d'Analyse Photométrique**
 
-Version 1.0 (révisions : vérification `test_installation.py`, CuPy/`importlib.metadata`, ligne KBMOD dans `requirements.txt`, dépendance **wotan** pour détrendage TTV/Tc)
+Version 1.0 (révisions : vérification `test_installation.py`, CuPy/`importlib.metadata`, ligne KBMOD dans `requirements.txt`, dépendance **wotan** pour détrendage TTV/Tc, migration Prospector/FSPS vers WSL, paramètre `equipment.camera_gain_e_per_adu` dans `config.json` pour le gain PTC)
 
 **Responsable HOPS-modified** : J.P Vignes  
 **Contact** : jeanpascal.vignes@gmail.com
+
+---
+
+## Mises à jour depuis hier 08:00
+
+- **Prospector/FSPS** : la voie Windows native a été retirée ; le flux recommandé et supporté est désormais `Installation_fsps\prospector.bat` (WSL).
+- **Installateurs supprimés** : `INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat` et `INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1`.
+- **Lanceur NPOAP** : `LANCER_NPOAP_ASTROENV.bat` active un backend Prospector WSL par défaut (`NPOAP_PROSPECTOR_BACKEND=wsl`), tout en gardant un mode strict optionnel via `NPOAP_STRICT_ENV=1`.
+- **Stabilité WSL** : `Installation_fsps\prospector.bat` a été durci (gestion CRLF/LF, quoting, code retour fiable, console persistante).
+- **Transitoires/STDPipe** : dégradation propre d'ASTRiDE si environnement incompatible (plus de crash d'import global).
+- **Dépendances** : alignement `photutils`/`astride`, installation `lightkurve` et `synphot` validées dans le flux astroenv.
+- **Configuration** : le gain (e⁻/ADU) issu de l’analyse PTC peut être enregistré dans `config.json` ; voir [§8 – Configuration initiale](#8-configuration-initiale) et le manuel utilisateur (réduction / PTC). Le dossier profil **`.npoap`** est décrit en **§1** du manuel utilisateur et rappelé en **§8** ci-dessous.
 
 ---
 
@@ -241,49 +253,22 @@ Prospector est un outil Python pour inférer les propriétés stellaires à part
 
 **IMPORTANT** : le paquet **astro-prospector** doit être installé depuis **GitHub** (`bd-j/prospector`), pas depuis PyPI. Le nom `prospector` sur PyPI désigne un **autre** logiciel (analyse statique de code Python).
 
-#### Faut-il garder `INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat` et `.ps1` ?
-
-**Oui**, tant que vous utilisez NPOAP sous Windows avec l’environnement Conda **`astroenv`** : ces scripts installent **Prospector dans ce même Python** que `python main.py`. Le fichier **`.bat`** est un lanceur (double-clic, politique d’exécution PowerShell) ; le **`.ps1`** contient toute la logique et les paramètres (`-InstallFSPS`, `-CondaEnv autre_env`, `-SkipVerification`, `-ForceReinstall`, etc.). Vous pouvez n’utiliser que le `.ps1` si vous préférez, mais le `.bat` reste utile pour les utilisateurs qui n’ouvrent pas PowerShell à la main.
-
-#### Voie A — Windows natif + Conda `astroenv` (recommandée pour NPOAP)
-
-**Méthode recommandée** :
-
-```cmd
-INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
-```
-
-Équivalent (PowerShell, depuis le dossier NPOAP) :
-
-```powershell
-.\INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1
-```
-
-Avec tentative de compilation **FSPS** (nécessite **CMake** et **gfortran** sur le PATH Windows) :
-
-```powershell
-.\INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1 -InstallFSPS
-```
-
-Sans **gfortran**, l’installation de la roue **fsps** échoue en général : le script enchaîne avec `pip install … --no-deps`, crée **SPS_HOME** et des **fichiers stub** ; Prospector reste importable et une grande partie des fonctionnalités fonctionne.
-
-**Vérification** :
-
-```cmd
-conda activate astroenv
-python -c "import prospect; from prospect.models import SpecModel; print('Prospector OK!')"
-```
-
-#### Voie B — WSL2 (Linux) : FSPS / Prospector dans un venv dédié
+#### Voie A — WSL2 (Linux) : FSPS / Prospector dans un venv dédié (recommandée)
 
 Pour un environnement **Linux** avec **gfortran** et souvent une installation **fsps** plus simple, utilisez le dossier **`Installation_fsps/`** :
 
 - **`Installation_fsps/prospector.bat`** (Windows) appelle **`Installation_fsps/install_prospector_wsl.sh`** dans WSL.
 - Prérequis : **WSL2** et une distro type **Ubuntu** (`install_wsl.bat`, `install_ubuntu_wsl.bat` si besoin).
 
-Cette voie installe un **venv séparé** sous Linux (`~/.local/share/npoap-prospector-wsl/venv` par défaut) : ce n’est **pas** le même interpréteur que **`astroenv`** sous Windows. NPOAP lancé depuis Windows n’utilise pas automatiquement ce venv ; la voie B sert surtout à du travail Prospector/FSPS en ligne de commande sous WSL. Certaines archives placent `prospector.bat` et `install_prospector_wsl.sh` à la **racine** du dossier : gardez les **deux** fichiers côte à côte et exécutez le `.bat`.
+Cette voie installe un **venv séparé** sous Linux (`~/.local/share/npoap-prospector-wsl/venv` par défaut). Dans les versions récentes de NPOAP, l’onglet Spectroscopie peut utiliser ce backend WSL directement (variable `NPOAP_PROSPECTOR_BACKEND=wsl`, activée par défaut dans le lanceur).
 
-#### Voie C — Installation manuelle (Windows, dans `astroenv`)
+**Vérification rapide** :
+
+```cmd
+wsl -e bash -lc "source \"$HOME/.local/share/npoap-prospector-wsl/venv/bin/activate\" && export SPS_HOME=\"$HOME/.local/share/fsps\" && python3 -c \"import prospect, fsps; print('OK WSL')\""
+```
+
+#### Voie B — Installation manuelle (Windows, sans FSPS complet)
 
 ```cmd
 conda activate astroenv
@@ -297,7 +282,7 @@ pip install git+https://github.com/bd-j/prospector.git --no-cache-dir
 
 Si la dernière ligne échoue à cause de **fsps** : `pip install git+https://github.com/bd-j/prospector.git --no-deps` puis installer **fsps** séparément ou s’en tenir aux stubs (comme le script automatique).
 
-**FSPS** : optionnel mais utile pour les modèles SED complets. Détails, ordre des paquets et dépannage : **`docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`**.
+**FSPS** : sous Windows natif, la compilation reste fragile ; privilégiez la voie WSL pour un FSPS opérationnel.
 
 ### CuPy (Accélération GPU - Optionnel - NON REQUIS)
 
@@ -468,6 +453,7 @@ Dans l'onglet **Astéroïdes**, après avoir chargé un dossier d'images FITS, c
    ├── main.py
    ├── requirements.txt
    ├── config.py
+   ├── config.json          # (optionnel) crée à la 1re sauvegarde depuis l’onglet Accueil ou enregistrement PTC
    ├── gui/
    ├── core/
    └── utils/
@@ -479,7 +465,20 @@ Dans l'onglet **Astéroïdes**, après avoir chargé un dossier d'images FITS, c
    - Entrez votre clé API Astrometry.net (obtenue sur https://nova.astrometry.net/)
    - Cliquez sur "Sauvegarder"
 
-4. **Installation de HOPS dans l'onglet Photométrie Exoplanètes** :
+4. **Fichier `config.json` (paramètres locaux, optionnel la première fois)** :
+   - Les réglages saisis dans l’onglet **Accueil** (observatoire, matériel, affiliations, clé API éventuelle) sont enregistrés dans **`config.json`** à la racine du dossier NPOAP.
+   - Ce fichier n’est **pas** livré d’office dans l’archive : il apparaît après la **première sauvegarde** depuis l’Accueil, ou dès qu’une autre fonction écrit la configuration.
+   - **Gain caméra (PTC)** : après une **analyse PTC** (onglet *Réduction de Données*) ou un **export PTC**, NPOAP peut enregistrer le gain (e⁻/ADU) dans `config.json`, sous le chemin logique `equipment` → clé **`camera_gain_e_per_adu`**. Cette valeur est ensuite utilisée lors de la **calibration** pour fixer l’en-tête **GAIN** des images calibrées. Les valeurs par défaut et la structure des dictionnaires sont définies dans `config.py` ; `config.json` **complète** ou **surcharge** ces réglages pour votre machine.
+   - Vous pouvez dupliquer ou versionner `config.json` (autre télescope, autre site) : gardez un fichier JSON valide.
+
+Dossier **profil utilisateur** (fichiers locaux hors dépôt NPOAP) :
+
+- Sous **Windows**, NPOAP utilise en particulier **`%USERPROFILE%\.npoap`**, par exemple **`C:\Users\<votre_compte>\.npoap`** (dossier masqué si l’explorateur ne montre pas les fichiers cachés).
+- Sous **Linux / macOS**, l’équivalent est **`~/.npoap`**.
+- Y figurent notamment : **`Coeftransformation/`** (coefficients de transformation), **`gaia_cache/`**, **`reference_images/`**, **`catalogues/`** (défaut onglet *Observation de la nuit*), et le fichier **`planetarium_c2a_tcp.json`** (planétarium C2A). Le détail des rôles est donné au **manuel utilisateur** ([§1 — Emplacements des données (`.npoap`)](MANUEL_UTILISATEUR.md#emplacements-données-npoap)).
+- Ce dossier n’est **pas** celui de `config.json` (racine NPOAP) ni du répertoire de travail d’images.
+
+5. **Installation de HOPS dans l'onglet Photométrie Exoplanètes** :
    - Ouvrez NPOAP, onglet **Photométrie Exoplanètes**
    - Cliquez sur **Installer / Réinstaller HOPS (ZIP)**
    - Sélectionnez l'archive `HOPS-modified.zip` (ou `hops-master.zip` si vous utilisez l'archive officielle)
@@ -547,7 +546,7 @@ Si vous utilisez une distribution NPOAP (dossier « reduction », « exoplanets 
 2. Ouvrez le dossier de la distribution (il contient `main.py` et un `requirements.txt` propre au **profil** : réduction, exoplanètes, complet, etc.).
 3. **Première installation** : double-cliquez sur **`INSTALLER_NPOAP_ASTROENV_WINDOWS.bat`**. Le script crée l’environnement conda **`astroenv`** s’il n’existe pas (`python=3.11`), l’active, puis exécute **`pip install -r requirements.txt`** pour ce profil.  
    - *Rétro-compatibilité* : le profil « full » peut aussi fournir **`INSTALLER_DISTRIBUTION_FULL_WINDOWS.bat`**, qui appelle le même installateur.
-4. **Lancements suivants** : double-cliquez sur **`lancement.bat`**. Ce script **exige** que **astroenv** soit utilisable (il ne retombe plus sur un Python « nu » du PATH). En cas d’erreur, réexécutez l’installateur ou ouvrez une **Anaconda Prompt** et vérifiez `conda activate astroenv` (voir Méthode 2).
+4. **Lancements suivants** : double-cliquez sur **`LANCEMENT.bat`**. Ce script **exige** que **astroenv** soit utilisable (il ne retombe plus sur un Python « nu » du PATH). En cas d’erreur, réexécutez l’installateur ou ouvrez une **Anaconda Prompt** et vérifiez `conda activate astroenv` (voir Méthode 2).
 
 Les anciennes distributions qui utilisaient un dossier **`venv`** local ne sont plus le mode par défaut : tout est centralisé dans **astroenv**.
 
@@ -656,7 +655,7 @@ Le journal est configuré en mode **erreurs uniquement** (avec traces d'exceptio
 conda activate astroenv
 pip install reproject
 ```
-Puis relancez NPOAP avec **lancement.bat** (ou après `conda activate astroenv`). Si vous lancez par double-clic, assurez-vous que le script active bien astroenv (voir section 10).
+Puis relancez NPOAP avec **`LANCEMENT.bat`** (ou après `conda activate astroenv`). Si vous lancez par double-clic, assurez-vous que le script active bien astroenv (voir section 10).
 
 ### Erreur : "No module named 'readline'" (PHOEBE2 sur Windows)
 
@@ -677,11 +676,11 @@ Cette erreur est normale sur Windows. Elle est gérée automatiquement par l'app
 
 ### Erreur lors de l'installation de Prospector
 
-**Erreur** : `No CMAKE_Fortran_COMPILER could be found` / échec de compilation de **fsps** sous Windows
+**Erreur** : échec de compilation de **fsps** sous Windows
 
 **Cause** : il manque **gfortran** (Fortran). CMake et MSVC peuvent être présents sans Fortran.
 
-**Conséquence habituelle** : l’installateur PowerShell enchaîne avec `pip install prospector --no-deps` et des stubs **SPS_HOME** ; Prospector peut quand même s’installer. Pour un **fsps** complet : installez gfortran (ex. MSYS2 / MinGW) et relancez avec `-InstallFSPS`, ou utilisez la voie **WSL** (`Installation_fsps/prospector.bat`).
+**Conséquence habituelle** : Prospector peut rester utilisable avec stubs **SPS_HOME**. Pour un **FSPS** complet, utilisez la voie **WSL** (`Installation_fsps/prospector.bat`).
 
 **Erreur** : `ModuleNotFoundError: No module named 'sedpy.observate'`
 
@@ -707,7 +706,7 @@ pip install astropy>=5.0.0
 **Solution** : Supprimez le fichier stub et relancez l'installation :
 ```cmd
 del "%USERPROFILE%\.local\share\fsps\dust\Nenkova08_y010_torusg_n10_q2.0.dat"
-# Puis relancez INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
+# Puis relancez Installation_fsps\prospector.bat (WSL)
 ```
 
 Pour plus de détails, consultez `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`.
@@ -764,16 +763,14 @@ conda activate astroenv
 pip install --upgrade -r requirements.txt
 ```
 
-### Installation de Prospector (optionnel)
+### Installation de Prospector/FSPS (optionnel)
 
 ```cmd
-conda activate astroenv
-REM Script Windows (installe dans astroenv) :
-INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat
-
-REM Alternative WSL : Installation_fsps\prospector.bat (venv Linux separe)
+REM Recommande : installation dans WSL (FSPS complet)
+Installation_fsps\prospector.bat
 
 REM Ou installation manuelle dans astroenv :
+conda activate astroenv
 pip install numpy>=1.20.0 scipy>=1.7.0 pandas>=1.3.0 astropy>=5.0.0
 pip uninstall sedpy -y
 pip install git+https://github.com/bd-j/sedpy.git --no-cache-dir
@@ -796,7 +793,7 @@ conda env remove -n astroenv
 - **Protocole d'installation Prospector** : `docs/PROTOCOLE_INSTALLATION_PROSPECTOR_WINDOWS.md`
 - **Installation KBMOD sous WSL** : `docs/INSTALL_KBMOD_WSL.md`
 - **Logs de l'application** : Dossier `logs/`
-- **Configuration** : `config.py` et `config.json`
+- **Configuration** : `config.py` (défauts du code) et `config.json` (paramètres utilisateur : observatoire, équipement, dont le gain PTC `equipment.camera_gain_e_per_adu` le cas échéant)
 
 ---
 

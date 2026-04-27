@@ -2,16 +2,29 @@
 
 **NPOAP - Nouvelle Plateforme d'Observation et d'Analyse Photométrique**
 
-Version 1.0 — *compléments avril 2026 : **Coefficient médian** (synthèse 2σ dans le CSV, priorité de chargement pour astéroïdes / transitoires / exoplanètes-HOPS), photométrie transitoires (option calibration NPOAP), photométrie astéroïdes (batch, interface), réduction (SNR fit), onglet **Occultations** (SORA : carte d’occultation, export SharpCap).*
+Version 1.0 — *compléments avril 2026 : **Coefficient médian** (synthèse 2σ dans le CSV, priorité de chargement pour astéroïdes / transitoires / exoplanètes-HOPS), photométrie transitoires (option calibration NPOAP), photométrie astéroïdes (batch, interface), réduction (SNR fit), **gain caméra (PTC)** enregistré dans `config.json` et appliqué à l’en-tête **GAIN** des FITS calibrés avant l’astrométrie, onglet **Occultations** (SORA : carte d’occultation, export SharpCap), backend Prospector/FSPS via WSL.*
 
 **Responsable HOPS-modified** : J.P Vignes  
 **Contact** : jeanpascal.vignes@gmail.com
 
 ---
 
+## Mises à jour depuis hier 08:00
+
+- **Prospector/FSPS** : NPOAP utilise un backend WSL pour l'analyse Prospector avancée avec FSPS (`NPOAP_PROSPECTOR_BACKEND=wsl` par défaut via le lanceur).
+- **Installateurs Windows Prospector** : retirés du flux utilisateur ; la voie supportée est `Installation_fsps\prospector.bat`.
+- **Stabilité WSL** : exécution fiabilisée (retours d'erreur, conversion de fins de ligne, console persistante).
+- **Transitoires** : `stdpipe_wrapper` ne casse plus l'import global si ASTRiDE est indisponible ; le masque des traînées est simplement désactivé dans ce cas.
+- **Dépendances** : alignements récents autour de `lightkurve`, `synphot`, `stdpipe`, `photutils`/`astride`.
+- **PTC / gain** : après une analyse PTC ou un export PTC, le gain (e⁻/ADU) est enregistré dans `config.json` (clé `equipment.camera_gain_e_per_adu`) et réutilisé pour la prochaine **calibration** (en-tête **GAIN** + propagation de la variance, voir [§3](#3-réduction-de-données)).
+- **Dossier utilisateur** : description du profil local **`.npoap`** sous Windows, sous-dossiers et distinction avec `config.json` / `logs/`, voir [§1](#emplacements-données-npoap).
+
+---
+
 ## Table des matières
 
 1. [Vue d'ensemble](#1-vue-densemble)
+   - [Emplacements des données (dossier utilisateur `.npoap`)](#emplacements-données-npoap)
 2. [Accueil](#2-accueil)
 3. [Réduction de Données](#3-réduction-de-données)
    - [Coefficients de transformation (Réduction)](#coef-transformation-reduction)
@@ -69,7 +82,35 @@ L'interface principale contient plusieurs onglets dans un notebook :
 2. **Photométrie** → Extraire les courbes de lumière
 3. **Analyse de données** → Analyser les périodes, TTV, systèmes multiples
 
+<a id="emplacements-données-npoap"></a>
+### Emplacements des données (dossier utilisateur `.npoap`)
 
+En plus des fichiers liés **au dépôt NPOAP** (dossier d’installation du programme, ex. `Documents\NPOAP\`) et de votre **répertoire de travail** (projet d’images : `science/`, `output/`, etc.), NPOAP utilise un **dossier de profil utilisateur** créé dans le **répertoire personnel** :
+
+| Système | Emplacement type |
+|--------|-------------------|
+| **Windows** | `C:\Users\<votre_compte>\.npoap` |
+| **Linux / macOS** | `~/.npoap` (c’est-à-dire `/home/<utilisateur>/.npoap` ou `/Users/<utilisateur>/.npoap`) |
+
+Ce répertoire (souvent caché sous le nom **`.npoap`**) sert de **coffre-fort local** : caches, listes, coefficients et petits paramètres **indépendants** du répertoire où se trouve le code NPOAP. Le dossier est **créé à la volée** quand une fonction en a besoin (premier usage de l’onglet concerné, etc.).
+
+**Contenu usuel (sous-dossiers et fichiers)** — les noms de répertoires sont exacts côté application :
+
+| Chemin (relatif à `.npoap`) | Rôle |
+|----------------------------|------|
+| `Coeftransformation/` | Packs de **coefficients de transformation** (photométrie, lien avec HOPS). |
+| `gaia_cache/` | **Cache** pour des accès / résolutions liés à Gaia (astrométrie rapide, etc.). |
+| `reference_images/` | **Images de référence** utilisées notamment par certains chemins de photométrie transitoire (ex. comparaison). |
+| `catalogues/` | **Catalogues** téléchargés ou copiés pour l’**observation de la nuit** (fichiers type NEA, comètes, etc.) ; l’utilisateur peut rediriger l’enregistrement, mais c’est l’**emplacement par défaut** proposé. |
+| `planetarium_c2a_tcp.json` | Fichier de **paramètres TCP/IP et chemin C2A** (onglet *Planétarium*). |
+
+**À ne pas confondre :**
+
+- **`config.json`** (réglages généraux : observatoire, équipement, gain PTC, etc.) : à la **racine du dossier d’installation NPOAP** (près de `main.py` et `config.py`), *pas* dans `.npoap` — voir [§2 Accueil](#2-accueil).
+- **Clé API Astrometry.net** (fichier texte) : par défaut **`%USERPROFILE%\.astrometry_api_key`**, donc *à côté* de `.npoap` (même profil, autre nom de fichier).
+- **Journaux** de session : plutôt le dossier **`logs/`** à la **racine du dépôt NPOAP** (fichiers `npoap_<pid>.log`).
+
+Vous pouvez **sauvegarder** tout le dossier `.npoap` (sauvegarde utilisateur) indépendamment de votre répertoire d’images ou du clone git du programme.
 
 ---
 
@@ -118,6 +159,8 @@ L'échelle de pixel calculée sera automatiquement utilisée dans le sous-onglet
 ### Sauvegarde
 
 Cliquez sur le bouton **Sauvegarder la configuration** pour enregistrer vos paramètres. Ces informations seront conservées pour les prochaines sessions.
+
+Le fichier **`config.json`** (à la racine du dossier NPOAP, à côté de `config.py`) contient notamment l’**observatoire**, l’**équipement** (focale, taille de pixel, binning, etc.) et, le cas échéant, le **gain caméra** mesuré par PTC (`camera_gain_e_per_adu` en e⁻/ADU). Les valeurs par défaut se trouvent dans `config.py` ; elles sont complétées ou remplacées par ce que vous enregistrez dans l’onglet Accueil ou par l’enregistrement automatique issu de la PTC (voir [Analyse PTC](#ptc-reduction)).
 
 ---
 
@@ -201,6 +244,18 @@ Export :
   - si un répertoire de travail est défini : `output/ptc/`,
   - sinon : un dossier d'export est demandé.
 
+**Enregistrement du gain dans la configuration (pour la calibration)** :
+
+- Dès qu’un gain (e⁻/ADU) est obtenu par la PTC, NPOAP l’enregistre aussi dans **la configuration** : le fichier **`config.json`** à la racine NPOAP reçoit la valeur dans le bloc **`equipment`**, clé **`camera_gain_e_per_adu`**. Cela se produit **à la fin d’une analyse PTC réussie** et **lors d’un export PTC** (si un gain est calculé). La clé par défaut dans le code se trouve dans `config.py` (`EQUIPMENT_OBSERVATION`).
+
+**Utilisation à la calibration** (avant l’astrométrie) :
+
+- Lors de **Lancer la calibration**, si `camera_gain_e_per_adu` est défini dans la config, NPOAP l’utilise pour :
+  - recalculer le **modèle de variance** (carte en HDU `VARIANCE`, cohérent avec ce gain),
+  - écrire l’en-tête FITS **`GAIN`** sur chaque image calibrée (`output/calibrated/`) avec le commentaire indiquant l’origine (configuration / PTC). Ce gain a **priorité** sur l’en-tête d’une image brute si celui-ci est absent, erroné ou hétérogène.
+
+Pour **revenir au gain indiqué dans les FITS bruts** uniquement, supprimez la clé `camera_gain_e_per_adu` du bloc `equipment` dans `config.json` (ou remplacez-la par une valeur nulle) puis relancez l’application, ou modifiez le fichier manuellement en respectant le JSON.
+
 Bonnes pratiques :
 
 - conserver **gain / offset / binning** constants pendant la séquence,
@@ -242,7 +297,7 @@ Pour chaque image scientifique :
    - **Sans scaling** : `image = image - master_dark`
    - **Avec scaling** (case cochée) : `image = image - master_dark × (EXPTIME_light / EXPTIME_darks)`. Le temps de référence des darks est la médiane des **EXPTIME** des images dark. Si une image science n’a pas d’**EXPTIME** valide, le dark est appliqué sans scaling pour cette image (un avertissement est enregistré dans le journal).
 3. **Division par le master flat** : `image = image / master_flat`
-4. **Sauvegarde** : L'image calibrée est sauvegardée dans `output/calibrated/`
+4. **Sauvegarde** : L'image calibrée est sauvegardée dans `output/calibrated/` (image en float32, avec HDU de variance en unités ADU²). Si le **gain caméra** a été enregistré (PTC / `config.json`, voir [§ PTC](#ptc-reduction)), l’en-tête **GAIN** (e⁻/ADU) est fixé de façon cohérente pour les étapes amont (photométrie, astrométrie, etc.).
 
 **Important** : Les images calibrées sont automatiquement sauvegardées dans le dossier `output/calibrated/`. Ce dossier est ensuite utilisé pour l'astrométrie et les étapes suivantes.
 
@@ -1489,7 +1544,7 @@ Prospector permet d'inférer les propriétés stellaires des galaxies à partir 
 
 #### Prérequis
 
-- **Prospector installé** : Utilisez `INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat` pour l'installation
+- **Prospector/FSPS installé via WSL** : utilisez `Installation_fsps\prospector.bat`
 - **FSPS** (optionnel) : Recommandé pour les fonctionnalités avancées
 
 #### Statut de Prospector
@@ -1497,6 +1552,7 @@ Prospector permet d'inférer les propriétés stellaires des galaxies à partir 
 L'onglet affiche automatiquement le statut de Prospector :
 - **"Installed"** : Prospector est disponible et prêt à l'emploi
 - **"Non installé"** : Cliquez sur "Installer Prospector" pour l'installer automatiquement
+- **"backend WSL + FSPS"** : l'analyse utilise l'environnement Linux WSL (recommandé)
 
 #### Fonctionnalités Prospector
 
@@ -1513,10 +1569,10 @@ L'onglet affiche automatiquement le statut de Prospector :
 
 #### Tutoriel : Analyse avec Prospector
 
-1. **Installer Prospector** (si non installé) :
-   - Cliquez sur "Installer Prospector" dans la section "Analyse de Galaxies (Prospector)"
-   - Attendez la fin de l'installation (peut prendre plusieurs minutes)
-   - Redémarrez l'application
+1. **Installer Prospector/FSPS** (si non installé) :
+   - Lancez `Installation_fsps\prospector.bat` depuis le dossier NPOAP
+   - Attendez la fin de l'installation dans WSL (peut prendre plusieurs minutes)
+   - Relancez NPOAP avec `LANCER_NPOAP_ASTROENV.bat`
 
 2. **Charger un spectre de galaxie** :
    - Cliquez sur "Charger spectre" et sélectionnez un fichier FITS ou ASCII
@@ -1552,7 +1608,7 @@ L'onglet affiche automatiquement le statut de Prospector :
 4. Examinez les quantités mesurées (EW, flux, FWHM, etc.)
 
 **Pour les galaxies (Prospector)** :
-1. Installez Prospector si nécessaire
+1. Installez Prospector/FSPS via `Installation_fsps\prospector.bat` si nécessaire
 2. Chargez un spectre de galaxie
 3. Cliquez sur "🌌 Inférer Propriétés Stellaires (SED)"
 4. Attendez les résultats de l'inférence bayésienne
