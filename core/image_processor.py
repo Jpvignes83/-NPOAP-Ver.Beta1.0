@@ -12,7 +12,7 @@ from astropy.coordinates import (
 )
 from astropy.time import Time
 import astropy.units as u
-from config import OBSERVATORY
+from config import OBSERVATORY, get_camera_gain_e_per_adu, refresh_camera_gain_from_config_json
 from core.calculate_master import CalculateMaster
 from core.astrometry import (
     AstrometrySolverNova,
@@ -383,6 +383,10 @@ class ImageProcessor:
             Message d'avertissement filtres lights/flats si incohérence (calibration poursuivie), sinon None.
         """
         logging.info("Début de la calibration (ImageProcessor.process_calibration)")
+        refresh_camera_gain_from_config_json()
+        gain_cfg = get_camera_gain_e_per_adu()
+        if gain_cfg is not None:
+            logger.info("Gain caméra (config/PTC) : %.6f e-/ADU — utilisé pour VARIANCE et en-tête GAIN.", gain_cfg)
 
         science_files = [Path(f) for f in (science_files or [])]
         bias_files = [Path(f) for f in (bias_files or [])]
@@ -512,6 +516,9 @@ class ImageProcessor:
                 data = fits.getdata(f, 0).astype(float)
                 hdr = fits.getheader(f, 0)
                 gain, rn_e = _gain_readnoise_electrons(hdr)
+                if gain_cfg is not None:
+                    gain = float(gain_cfg)
+                    hdr["GAIN"] = (gain, "e-/ADU (NPOAP config/PTC, prioritaire sur en-tete brut)")
                 var = _variance_poisson_readnoise_adu(data, gain, rn_e)
 
                 if master_bias is not None:
