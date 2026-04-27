@@ -15,6 +15,7 @@ from astropy.io import fits
 from astropy.visualization import ZScaleInterval
 from scipy.ndimage import maximum_filter
 
+from config import persist_camera_gain_e_per_adu
 from core.image_processor import ImageProcessor, PipelineControl
 from core.ptc_analysis import analyze_ptc
 from core.transformation_coefficients import (
@@ -857,6 +858,15 @@ class CCDProcGUI:
                 f"✅ PTC terminee: points={res.total_points}, fit={res.used_points}, "
                 f"gain={gain_txt}, RN={rn_txt}, pente={res.slope:.6g}, intercept={res.intercept:.6g}"
             )
+            if res.gain_e_per_adu is not None:
+                try:
+                    persist_camera_gain_e_per_adu(res.gain_e_per_adu)
+                    self.log_message(
+                        f"💾 Gain {res.gain_e_per_adu:.4f} e-/ADU enregistre (config.json / EQUIPMENT_OBSERVATION) "
+                        f"pour la calibration (en-tete GAIN)."
+                    )
+                except Exception as e:
+                    self.log_message(f"⚠️ Enregistrement du gain dans la config : {e}", "warning")
             self._call_on_ui_thread(self._show_ptc_plot)
         except Exception as e:
             self._call_on_ui_thread(self._showerror, "PTC", str(e))
@@ -952,6 +962,15 @@ class CCDProcGUI:
         }
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=True)
+
+        if res.gain_e_per_adu is not None:
+            try:
+                persist_camera_gain_e_per_adu(res.gain_e_per_adu)
+                self.log_message(
+                    f"💾 Gain {res.gain_e_per_adu:.4f} e-/ADU enregistre (config) pour l'en-tete GAIN a la calibration."
+                )
+            except Exception as e:
+                self.log_message(f"⚠️ Enregistrement du gain dans la config : {e}", "warning")
 
         fig, ax = plt.subplots(figsize=(7.2, 5.2))
         ax.scatter(x, y, s=22, alpha=0.75, label="Points PTC")
