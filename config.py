@@ -5,11 +5,11 @@ from pathlib import Path
 # Observatoire (valeurs par défaut – modifiables via HomeTab)
 # ──────────────────────────────────────────────────────────────
 OBSERVATORY = {
-    "name": "",
-    "lat": ,   
-    "lon": ,
-    "elev": ,     # mètres
-    "timezone": "",
+    "name": "Deep Sky Chile",
+    "lat": -30.52,   
+    "lon": -70.82,
+    "elev": 1710.0,     # mètres
+    "timezone": "Santiago, Chili",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -52,8 +52,8 @@ ASTROMETRY_API_KEY_FILE = Path.home() / ".astrometry_api_key"
 
 
 EQUIPMENT_OBSERVATION = {
-    "obs_code": "",           # Code observateur AAVSO (5 caractères max)
-    "camera": "",             # Nom de la caméra
+    "obs_code": "VJEB",           # Code observateur AAVSO (5 caractères max)
+    "camera": "CCD",             # Nom de la caméra
     "binning": "1x1",         # Binning (1x1, 2x2, 3x3, 4x4)
     "delim": "tab",             # Délimiteur pour rapports (, ; | : ! / ? ou tab)
     "telescope_diameter_mm": 500.0,  # Diamètre du télescope (mm) – configurable via Accueil
@@ -62,6 +62,8 @@ EQUIPMENT_OBSERVATION = {
     "sensor_height_mm": 0.0,  # Hauteur capteur (mm) – configurable via Accueil
     "pixel_size_um": 3.76,  # Taille du pixel en micromètres
     "pixel_scale_arcsec": 0.3800,  # Échelle pixel calculée (arcsec/pixel)
+    # Gain e-/ADU (mesure PTC NPOAP ; persisté dans config.json). Si défini, prioritaire sur l'en-tête brut.
+    "camera_gain_e_per_adu": None,
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -89,3 +91,84 @@ TNS_CONFIG = {
     "bot_name": "NPOAP",
     "use_sandbox": False,
 }
+
+
+def get_camera_gain_e_per_adu():
+    """
+    Retourne le gain caméra (e-/ADU) issu de la PTC / config.json, ou None si non défini.
+    """
+    g = EQUIPMENT_OBSERVATION.get("camera_gain_e_per_adu")
+    if g is None:
+        return None
+    try:
+        f = float(g)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def refresh_camera_gain_from_config_json() -> None:
+    """
+    Relit ``config.json`` (bloc equipment) et met à jour ``camera_gain_e_per_adu`` en mémoire.
+    Appelé au chargement Accueil et avant la calibration pour appliquer la valeur enregistrée.
+    """
+    import json
+
+    path = BASE_DIR / "config.json"
+    if not path.exists():
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        eq = data.get("equipment") or {}
+        g = eq.get("camera_gain_e_per_adu")
+        if g is not None and str(g).strip() != "":
+            gf = float(g)
+            EQUIPMENT_OBSERVATION["camera_gain_e_per_adu"] = gf if gf > 0 else None
+        else:
+            EQUIPMENT_OBSERVATION["camera_gain_e_per_adu"] = None
+    except Exception:
+        pass
+
+
+def persist_camera_gain_e_per_adu(gain_e_per_adu) -> None:
+    """
+    Enregistre le gain (e-/ADU) dans ``config.json`` (merge) et en mémoire.
+    Passez None pour retirer la surcharge (retour à l'en-tête FITS brut).
+    """
+    import json
+
+    g: float | None
+    if gain_e_per_adu is not None:
+        try:
+            g = float(gain_e_per_adu)
+        except (TypeError, ValueError):
+            g = None
+    else:
+        g = None
+    if g is not None and g <= 0:
+        g = None
+
+    EQUIPMENT_OBSERVATION["camera_gain_e_per_adu"] = g
+
+    path = BASE_DIR / "config.json"
+    data = {}
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    eq = data.get("equipment")
+    if not isinstance(eq, dict):
+        eq = {}
+    if g is not None:
+        eq["camera_gain_e_per_adu"] = g
+    else:
+        eq.pop("camera_gain_e_per_adu", None)
+    data["equipment"] = eq
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception:
+        pass
