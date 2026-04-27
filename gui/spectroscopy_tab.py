@@ -41,12 +41,19 @@ logger.info("GUI/SPECTROSCOPY_TAB: Début import Prospector")
 logger.info("=" * 60)
 try:
     logger.info("[GUI] Tentative d'import depuis core.prospector_analysis...")
-    from core.prospector_analysis import ProspectorAnalyzer, PROSPECTOR_AVAILABLE as PROSP_AVAIL
+    from core.prospector_analysis import (
+        ProspectorAnalyzer,
+        PROSPECTOR_AVAILABLE as PROSP_AVAIL,
+        PROSPECTOR_BACKEND,
+        PROSPECTOR_WSL_AVAILABLE,
+    )
     PROSPECTOR_AVAILABLE = PROSP_AVAIL
     logger.info(f"[GUI] ✓ Import réussi - PROSPECTOR_AVAILABLE = {PROSPECTOR_AVAILABLE}")
     logger.info(f"[GUI] ProspectorAnalyzer disponible: {ProspectorAnalyzer is not None}")
 except ImportError as e:
     PROSPECTOR_AVAILABLE = False
+    PROSPECTOR_BACKEND = "windows"
+    PROSPECTOR_WSL_AVAILABLE = False
     logger.error(f"[GUI] ✗ Erreur ImportError lors de l'import: {e}")
     logger.error(f"[GUI] Type d'erreur: {type(e).__name__}")
     import traceback
@@ -54,6 +61,8 @@ except ImportError as e:
     ProspectorAnalyzer = None
 except Exception as e:
     PROSPECTOR_AVAILABLE = False
+    PROSPECTOR_BACKEND = "windows"
+    PROSPECTOR_WSL_AVAILABLE = False
     logger.error(f"[GUI] ✗ Erreur inattendue lors de l'import: {e}")
     logger.error(f"[GUI] Type d'erreur: {type(e).__name__}")
     import traceback
@@ -208,6 +217,11 @@ class SpectroscopyTab(ttk.Frame):
                 version = getattr(prospect, '__version__', 'installé')
                 logger.info(f"[GUI] Version de prospect: {version}")
                 status_text = f"✓ Prospector {version} installé"
+                if PROSPECTOR_BACKEND == "wsl":
+                    if PROSPECTOR_WSL_AVAILABLE:
+                        status_text += " (backend WSL + FSPS)"
+                    else:
+                        status_text += " (backend WSL indisponible)"
                 
                 # Vérifier FSPS
                 try:
