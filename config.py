@@ -5,11 +5,11 @@ from pathlib import Path
 # Observatoire (valeurs par défaut – modifiables via HomeTab)
 # ──────────────────────────────────────────────────────────────
 OBSERVATORY = {
-    "name": "Deep Sky Chile",
-    "lat": -30.52,   
-    "lon": -70.82,
-    "elev": 1710.0,     # mètres
-    "timezone": "Santiago, Chili",
+    "name": "",
+    "lat": ,   
+    "lon": ,
+    "elev": ,     # mètres
+    "timezone": "",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -52,8 +52,8 @@ ASTROMETRY_API_KEY_FILE = Path.home() / ".astrometry_api_key"
 
 
 EQUIPMENT_OBSERVATION = {
-    "obs_code": "VJEB",           # Code observateur AAVSO (5 caractères max)
-    "camera": "CCD",             # Nom de la caméra
+    "obs_code": "",           # Code observateur AAVSO (5 caractères max)
+    "camera": "",             # Nom de la caméra
     "binning": "1x1",         # Binning (1x1, 2x2, 3x3, 4x4)
     "delim": "tab",             # Délimiteur pour rapports (, ; | : ! / ? ou tab)
     "telescope_diameter_mm": 500.0,  # Diamètre du télescope (mm) – configurable via Accueil
