@@ -25,6 +25,18 @@ stdpipe_photometry = None
 stdpipe_subtraction = None
 stdpipe_catalogues = None
 
+# stdpipe s'appuie encore sur pkg_resources (fourni par setuptools).
+# Dans certains environnements conda/pip, setuptools peut manquer.
+STDPIPE_PKG_RESOURCES_OK = True
+try:
+    import pkg_resources  # type: ignore  # noqa: F401
+except ImportError:
+    STDPIPE_PKG_RESOURCES_OK = False
+    logger.warning(
+        "pkg_resources introuvable (setuptools manquant). "
+        "Installez/maj setuptools dans astroenv: python -m pip install --upgrade setuptools"
+    )
+
 try:
     import stdpipe
     logger.info(f"Module stdpipe importé avec succès")
@@ -76,7 +88,13 @@ try:
         logger.info(f"STDPipe disponible avec modules: {', '.join(available_modules)}")
     else:
         STDPIPE_AVAILABLE = False
-        STDPIPE_ERROR = "STDPipe importé mais aucun sous-module essentiel n'est disponible"
+        if not STDPIPE_PKG_RESOURCES_OK:
+            STDPIPE_ERROR = (
+                "STDPipe importé mais ses sous-modules exigent pkg_resources/setuptools. "
+                "Installez/maj setuptools dans astroenv."
+            )
+        else:
+            STDPIPE_ERROR = "STDPipe importé mais aucun sous-module essentiel n'est disponible"
         logger.warning(STDPIPE_ERROR)
         
 except ImportError as e:
