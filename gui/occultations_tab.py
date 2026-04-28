@@ -1,13 +1,15 @@
 # gui/occultations_tab.py
 """Onglet Occultations : SORA (prédictions, analyse), PyMovie."""
 
+import json
 import logging
+import subprocess
 import threading
 import tkinter as tk
 from datetime import timedelta, timezone
 from pathlib import Path
-from typing import Optional
-from tkinter import filedialog, ttk
+from typing import Any, Optional
+from tkinter import filedialog, messagebox, ttk
 import webbrowser
 
 try:
@@ -31,6 +33,23 @@ def _open_url(url: str) -> None:
         webbrowser.open(url)
     except Exception:
         pass
+
+
+def _default_pymovie_conda_root() -> str:
+    """Racine type de l’environnement dédié PyMovie (conda user, Windows)."""
+    return str(Path.home() / ".conda" / "envs" / "pymovie")
+
+
+def _python_exe_in_conda_env(root: Path) -> Optional[Path]:
+    if not root.is_dir():
+        return None
+    win_py = root / "python.exe"
+    if win_py.is_file():
+        return win_py
+    nix_py = root / "bin" / "python"
+    if nix_py.is_file():
+        return nix_py
+    return None
 
 
 def _observatory_zoneinfo():
@@ -125,9 +144,9 @@ class OccultationsTab(ttk.Frame):
     _MAX_PREDICTION_BODIES = 20
     _PRED_LEFT_COL_WEIGHT = 1
     _PRED_RIGHT_COL_WEIGHT = 2
-    # Zone fixe pour la carte (tk + subsampling du PNG) ; ratio ~ 4:3
-    _MAP_VIEW_W = 960
-    _MAP_VIEW_H = 720
+    # Taille minimale d’affichage si Pillow est indisponible (PhotoImage.subsample)
+    _MAP_VIEW_FALLBACK_W = 960
+    _MAP_VIEW_FALLBACK_H = 720
 
     def __init__(self, parent, night_observation_tab=None):
         super().__init__(parent, padding=8)
@@ -135,10 +154,23 @@ class OccultationsTab(ttk.Frame):
 
         add_manual_help_header(self, "13-occultations-sora-pymovie-analyse")
         self._project_root = Path(__file__).resolve().parent.parent
+        self._npoap_dir = Path.home() / ".npoap"
+        try:
+            self._npoap_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self._pymovie_settings_path = self._npoap_dir / "occultations_pymovie.json"
+        self._pymovie_conda_root_var = tk.StringVar(master=self, value=_default_pymovie_conda_root())
+        self._load_pymovie_settings()
+        self._pymovie_proc: Optional[subprocess.Popen] = None
+        self._pyote_proc: Optional[subprocess.Popen] = None
         self._night_observation_tab = night_observation_tab
         self._pred_occ_labels = []
         self._pred_occ_rows = []
         self._pred_map_tk_photo = None
+        self._pred_map_prefs_path = self._npoap_dir / "sora_prediction_map_prefs.json"
+        self._pred_map_resize_job: Optional[Any] = None
+        self._pred_last_map_png_path: Optional[Path] = None
 
         nb = ttk.Notebook(self)
         nb.pack(fill=tk.BOTH, expand=True)
@@ -242,7 +274,7 @@ class OccultationsTab(ttk.Frame):
             1,
             weight=self._PRED_RIGHT_COL_WEIGHT,
             uniform="sora_pred",
-            minsize=self._MAP_VIEW_W + 24,
+            minsize=400,
         )
         body.rowconfigure(0, weight=1)
 
@@ -400,26 +432,148 @@ class OccultationsTab(ttk.Frame):
         self._pred_occ_combo = ttk.Combobox(ev_row, width=32, state="readonly")
         self._pred_occ_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        map_canvas_wrap = tk.Frame(
-            map_lf,
-            width=self._MAP_VIEW_W,
-            height=self._MAP_VIEW_H,
-            bg=self._text_bg(),
+        self._pred_map_res_var = tk.IntVar(master=self, value=2)
+        self._pred_map_zoom_var = tk.StringVar(master=self, value="4")
+        self._pred_map_states_var = tk.BooleanVar(master=self, value=True)
+        self._pred_map_labels_var = tk.BooleanVar(master=self, value=True)
+        self._pred_map_meridian_var = tk.StringVar(master=self, value="30")
+        self._pred_map_parallels_var = tk.StringVar(master=self, value="30")
+        self._pred_map_style_var = tk.IntVar(master=self, value=1)
+        self._pred_map_dpi_var = tk.StringVar(master=self, value="120")
+        self._pred_map_fmt_var = tk.StringVar(master=self, value="png")
+        self._pred_map_size_w_var = tk.StringVar(master=self, value="42")
+        self._pred_map_size_h_var = tk.StringVar(master=self, value="44")
+        self._pred_map_alpha_var = tk.StringVar(master=self, value="0.2")
+        self._pred_map_pref_vars = {
+            "resolution": self._pred_map_res_var,
+            "zoom": self._pred_map_zoom_var,
+            "states": self._pred_map_states_var,
+            "labels": self._pred_map_labels_var,
+            "meridian": self._pred_map_meridian_var,
+            "parallels": self._pred_map_parallels_var,
+            "mapstyle": self._pred_map_style_var,
+            "dpi": self._pred_map_dpi_var,
+            "fmt": self._pred_map_fmt_var,
+            "mapsize_w": self._pred_map_size_w_var,
+            "mapsize_h": self._pred_map_size_h_var,
+            "alpha": self._pred_map_alpha_var,
+        }
+        self._pred_load_map_prefs()
+
+        opt_lf = ttk.LabelFrame(map_lf, text="Options carte (SORA, plot_occ_map)", padding=6)
+        opt_lf.pack(fill=tk.X, pady=(0, 6))
+        og = opt_lf
+        r0 = 0
+        ttk.Label(og, text="Résolution Cartopy (1=10 m, 2=50 m, 3=100 m)").grid(
+            row=r0, column=0, sticky="w", padx=(0, 6), pady=1
         )
-        map_canvas_wrap.pack(anchor="center", pady=(4, 0))
-        map_canvas_wrap.pack_propagate(False)
+        tk.Spinbox(og, from_=1, to=3, width=4, textvariable=self._pred_map_res_var).grid(
+            row=r0, column=1, sticky="w", pady=1
+        )
+        ttk.Label(og, text="Zoom").grid(row=r0, column=2, sticky="w", padx=(12, 6), pady=1)
+        ttk.Entry(og, textvariable=self._pred_map_zoom_var, width=8).grid(
+            row=r0, column=3, sticky="w", pady=1
+        )
+        r0 += 1
+        ttk.Checkbutton(
+            og,
+            text="Frontières (states)",
+            variable=self._pred_map_states_var,
+            command=self._pred_save_map_prefs,
+        ).grid(row=r0, column=0, columnspan=2, sticky="w", pady=1)
+        ttk.Checkbutton(
+            og,
+            text="Légendes (labels)",
+            variable=self._pred_map_labels_var,
+            command=self._pred_save_map_prefs,
+        ).grid(row=r0, column=2, columnspan=2, sticky="w", pady=1)
+        r0 += 1
+        ttk.Label(og, text="Méridien (°)").grid(row=r0, column=0, sticky="w", padx=(0, 6), pady=1)
+        ttk.Entry(og, textvariable=self._pred_map_meridian_var, width=6).grid(
+            row=r0, column=1, sticky="w", pady=1
+        )
+        ttk.Label(og, text="Parallèles (°)").grid(row=r0, column=2, sticky="w", padx=(12, 6), pady=1)
+        ttk.Entry(og, textvariable=self._pred_map_parallels_var, width=6).grid(
+            row=r0, column=3, sticky="w", pady=1
+        )
+        r0 += 1
+        ttk.Label(og, text="Style (1=N&B, 2=couleur)").grid(
+            row=r0, column=0, sticky="w", padx=(0, 6), pady=1
+        )
+        tk.Spinbox(og, from_=1, to=2, width=4, textvariable=self._pred_map_style_var).grid(
+            row=r0, column=1, sticky="w", pady=1
+        )
+        ttk.Label(og, text="DPI").grid(row=r0, column=2, sticky="w", padx=(12, 6), pady=1)
+        ttk.Entry(og, textvariable=self._pred_map_dpi_var, width=6).grid(
+            row=r0, column=3, sticky="w", pady=1
+        )
+        r0 += 1
+        ttk.Label(og, text="Format fichier").grid(row=r0, column=0, sticky="w", padx=(0, 6), pady=1)
+        fmt_cb = ttk.Combobox(
+            og,
+            textvariable=self._pred_map_fmt_var,
+            values=("png", "pdf"),
+            width=8,
+            state="readonly",
+        )
+        fmt_cb.grid(row=r0, column=1, sticky="w", pady=1)
+        fmt_cb.bind("<<ComboboxSelected>>", lambda _e: self._pred_save_map_prefs())
+        ttk.Label(
+            og,
+            text="(aperçu intégré : PNG uniquement)",
+            font=("TkDefaultFont", 8),
+        ).grid(row=r0, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=1)
+        r0 += 1
+        ttk.Label(og, text="Taille figure (cm) — l × h").grid(
+            row=r0, column=0, sticky="w", padx=(0, 6), pady=1
+        )
+        szr = ttk.Frame(og)
+        szr.grid(row=r0, column=1, columnspan=3, sticky="w", pady=1)
+        ttk.Entry(szr, textvariable=self._pred_map_size_w_var, width=6).pack(side=tk.LEFT)
+        ttk.Label(szr, text="\u00d7").pack(side=tk.LEFT, padx=4)
+        ttk.Entry(szr, textvariable=self._pred_map_size_h_var, width=6).pack(side=tk.LEFT)
+        r0 += 1
+        ttk.Label(og, text="Alpha ombre nuit (0–1)").grid(
+            row=r0, column=0, sticky="w", padx=(0, 6), pady=1
+        )
+        ttk.Entry(og, textvariable=self._pred_map_alpha_var, width=8).grid(
+            row=r0, column=1, sticky="w", pady=1
+        )
+        ttk.Label(
+            og,
+            text="Préréglages enregistrés dans .npoap/sora_prediction_map_prefs.json",
+            font=("TkDefaultFont", 8),
+        ).grid(row=r0 + 1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        def _bind_pref_save(widget):
+            if isinstance(widget, (ttk.Entry, ttk.Combobox)):
+                widget.bind("<FocusOut>", lambda _e: self._pred_save_map_prefs())
+            elif isinstance(widget, tk.Spinbox):
+                widget.bind("<FocusOut>", lambda _e: self._pred_save_map_prefs())
+                widget.bind("<ButtonRelease-1>", lambda _e: self._pred_save_map_prefs())
+
+        for w in og.winfo_children():
+            _bind_pref_save(w)
+            if isinstance(w, ttk.Frame):
+                for c in w.winfo_children():
+                    _bind_pref_save(c)
+
+        map_canvas_wrap = tk.Frame(map_lf, bg=self._text_bg())
+        map_canvas_wrap.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._pred_map_canvas_wrap = map_canvas_wrap
+        map_canvas_wrap.bind("<Configure>", self._pred_on_map_canvas_configure)
         self._pred_map_placeholder = ttk.Label(
             map_canvas_wrap,
             text=(
                 "Lancez une prédiction, sélectionnez une occultation ci-dessus, "
                 "puis \u00ab Voir la carte \u00bb. La figure est générée par SORA (matplotlib / cartopy)."
             ),
-            wraplength=max(320, self._MAP_VIEW_W - 80),
+            wraplength=400,
             justify=tk.LEFT,
         )
         self._pred_map_placeholder.pack(anchor="nw", pady=(0, 6), padx=4)
         self._pred_map_image = tk.Label(map_canvas_wrap, text="", bg=self._text_bg())
-        self._pred_map_image.pack(anchor="center")
+        self._pred_map_image.pack(expand=True, fill=tk.BOTH)
 
         self._refresh_pred_observatory_labels()
 
@@ -448,11 +602,156 @@ class OccultationsTab(ttk.Frame):
 
     def _clear_pred_map_display(self):
         self._pred_map_tk_photo = None
+        self._pred_last_map_png_path = None
         if not hasattr(self, "_pred_map_image"):
             return
         self._pred_map_image.configure(image="")
         if self._pred_map_placeholder.winfo_manager() == "":
             self._pred_map_placeholder.pack(anchor="nw", pady=(0, 6), before=self._pred_map_image)
+
+    def _pred_load_map_prefs(self) -> None:
+        try:
+            if not self._pred_map_prefs_path.is_file():
+                return
+            with self._pred_map_prefs_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        for key, var in getattr(self, "_pred_map_pref_vars", {}).items():
+            if key not in data:
+                continue
+            val = data[key]
+            try:
+                if isinstance(var, tk.BooleanVar):
+                    var.set(bool(val))
+                elif isinstance(var, tk.IntVar):
+                    var.set(int(round(float(val))))
+                elif isinstance(var, tk.StringVar):
+                    var.set("" if val is None else str(val))
+                elif isinstance(var, tk.DoubleVar):
+                    var.set(float(val))
+            except (tk.TclError, ValueError, TypeError):
+                pass
+
+    def _pred_save_map_prefs(self) -> None:
+        d = {}
+        for key, var in getattr(self, "_pred_map_pref_vars", {}).items():
+            try:
+                if isinstance(var, tk.BooleanVar):
+                    d[key] = bool(var.get())
+                elif isinstance(var, (tk.IntVar, tk.StringVar, tk.DoubleVar)):
+                    d[key] = var.get()
+            except tk.TclError:
+                continue
+        try:
+            with self._pred_map_prefs_path.open("w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _pred_parse_float(self, raw: str, default: float) -> float:
+        try:
+            return float((raw or "").strip().replace(",", "."))
+        except (TypeError, ValueError):
+            return default
+
+    def _pred_parse_int(self, raw: str, default: int) -> int:
+        try:
+            return int(float((raw or "").strip().replace(",", ".")))
+        except (TypeError, ValueError):
+            return default
+
+    def _pred_collect_plot_occ_map_kw(self) -> dict:
+        """Paramètres SORA plot_occ_map (doc : cartes d’occultation)."""
+        zoom = self._pred_parse_float(self._pred_map_zoom_var.get(), 4.0)
+        if zoom <= 0:
+            zoom = 4.0
+        res = self._pred_map_res_var.get()
+        if res not in (1, 2, 3):
+            res = 2
+        mer = max(1, self._pred_parse_int(self._pred_map_meridian_var.get(), 30))
+        par = max(1, self._pred_parse_int(self._pred_map_parallels_var.get(), 30))
+        dpi = max(30, min(600, self._pred_parse_int(self._pred_map_dpi_var.get(), 120)))
+        ms_w = max(8.0, min(120.0, self._pred_parse_float(self._pred_map_size_w_var.get(), 42.0)))
+        ms_h = max(8.0, min(120.0, self._pred_parse_float(self._pred_map_size_h_var.get(), 44.0)))
+        fmt = (self._pred_map_fmt_var.get() or "png").strip().lower()
+        if fmt not in ("png", "pdf", "svg"):
+            fmt = "png"
+        mstyle = self._pred_map_style_var.get()
+        if mstyle not in (1, 2):
+            mstyle = 1
+        alpha = self._pred_parse_float(self._pred_map_alpha_var.get(), 0.2)
+        alpha = max(0.0, min(1.0, alpha))
+        return dict(
+            fmt=fmt,
+            dpi=int(dpi),
+            mapsize=[float(ms_w), float(ms_h)],
+            resolution=int(res),
+            zoom=float(zoom),
+            states=bool(self._pred_map_states_var.get()),
+            labels=bool(self._pred_map_labels_var.get()),
+            meridian=int(mer),
+            parallels=int(par),
+            mapstyle=int(mstyle),
+            alpha=float(alpha),
+        )
+
+    def _pred_on_map_canvas_configure(self, _event=None) -> None:
+        if self._pred_map_resize_job is not None:
+            try:
+                self.after_cancel(self._pred_map_resize_job)
+            except Exception:
+                pass
+        self._pred_map_resize_job = self.after(150, self._pred_redraw_map_to_canvas)
+
+    def _pred_redraw_map_to_canvas(self) -> None:
+        self._pred_map_resize_job = None
+        png_path = self._pred_last_map_png_path
+        if png_path is None or not png_path.is_file():
+            return
+        if not hasattr(self, "_pred_map_canvas_wrap"):
+            return
+        try:
+            cw = int(self._pred_map_canvas_wrap.winfo_width())
+            ch = int(self._pred_map_canvas_wrap.winfo_height())
+        except tk.TclError:
+            return
+        if cw < 32 or ch < 32:
+            return
+        bg = self._text_bg()
+        try:
+            from PIL import Image, ImageChops, ImageOps, ImageTk
+
+            im = Image.open(str(png_path)).convert("RGBA")
+            # Retire les bordures uniformes de la figure SORA pour mieux remplir le conteneur.
+            try:
+                bg_ref = Image.new("RGBA", im.size, im.getpixel((0, 0)))
+                diff = ImageChops.difference(im, bg_ref)
+                bbox = diff.getbbox()
+                if bbox:
+                    im = im.crop(bbox)
+            except Exception:
+                pass
+            try:
+                _resample = Image.Resampling.LANCZOS
+            except AttributeError:
+                _resample = Image.LANCZOS  # type: ignore[attr-defined]
+            # "cover" : remplit tout l'espace disponible (peut rogner légèrement les bords).
+            im = ImageOps.fit(im, (cw, ch), method=_resample, centering=(0.5, 0.5))
+            photo = ImageTk.PhotoImage(im)
+        except Exception:
+            try:
+                photo = tk.PhotoImage(file=str(png_path))
+                mw, mh = max(cw, self._MAP_VIEW_FALLBACK_W), max(ch, self._MAP_VIEW_FALLBACK_H)
+                while photo.width() > mw or photo.height() > mh:
+                    photo = photo.subsample(2, 2)
+            except tk.TclError as ex2:
+                logger.error("Affichage carte PNG : %s", ex2)
+                return
+        self._pred_map_tk_photo = photo
+        self._pred_map_image.configure(image=photo)
 
     def _pred_export_table_txt(self):
         """Exporte le contenu de la zone résultat (table formatée) vers un fichier texte UTF-8."""
@@ -874,39 +1173,86 @@ class OccultationsTab(ttk.Frame):
                     "plot_occ_map : pas d'error_ra/error_dec dans les métadonnées ; "
                     "pas de lignes d'incertitude (voir doc SORA, paramètre error=)."
                 )
-            mapsize_cm = [42.0, 44.0]
-            logger.info(
-                "plot_occ_map : site=%s lon=%.6f lat=%.6f, zoom=4, mapsize=%s cm, arrow=False",
-                obs_name, obs_lon, obs_lat, mapsize_cm,
-            )
+            opts = self._pred_collect_plot_occ_map_kw()
             map_kw = dict(
                 path=str(out_dir),
                 nameimg="npoap_occ_map",
-                fmt="png",
-                dpi=120,
-                mapsize=mapsize_cm,
                 sites=site_dict,
                 centerproj=[obs_lon, obs_lat],
                 centermap_geo=[obs_lon, obs_lat],
-                zoom=4,
                 arrow=False,
                 sscale=2.4,
                 site_box_alpha=0.88,
+                **opts,
             )
             if err_mas is not None:
                 map_kw["error"] = err_mas
-                map_kw["ercolor"] = "darkorange"
-            try:
-                row.plot_occ_map(site_name=True, **map_kw)
-            except TypeError:
-                logger.info(
-                    "site_name=True : TypeError (SORA/cartopy) ; nouvelle tentative sans libellé de site."
+                map_kw["lncolor"] = "darkorange"
+            ext = str(map_kw.get("fmt", "png") or "png").lower()
+            if ext not in ("png", "pdf"):
+                ext = "png"
+                map_kw["fmt"] = "png"
+            logger.info(
+                "plot_occ_map : site=%s lon=%.6f lat=%.6f, opts=%s",
+                obs_name, obs_lon, obs_lat, {k: map_kw[k] for k in sorted(map_kw) if k != "sites"},
+            )
+
+            def _attempt_plot(kw: dict, site_nm: bool) -> None:
+                row.plot_occ_map(site_name=site_nm, **kw)
+
+            def _plot_with_fallbacks(kw: dict) -> None:
+                fallbacks = []
+                seen = set()
+
+                def _add_variant(d: dict) -> None:
+                    sig = json.dumps(d, sort_keys=True, default=str)
+                    if sig not in seen:
+                        seen.add(sig)
+                        fallbacks.append(dict(d))
+
+                _add_variant(kw)
+                _add_variant({k: v for k, v in kw.items() if k not in ("meridian", "parallels")})
+                _add_variant(
+                    {
+                        k: v
+                        for k, v in kw.items()
+                        if k not in ("meridian", "parallels", "resolution", "mapstyle", "alpha")
+                    }
                 )
-                plt.close()
-                row.plot_occ_map(site_name=False, **map_kw)
-            png_path = out_dir / "npoap_occ_map.png"
+                _add_variant(
+                    {
+                        k: v
+                        for k, v in kw.items()
+                        if k
+                        not in (
+                            "meridian",
+                            "parallels",
+                            "resolution",
+                            "mapstyle",
+                            "alpha",
+                            "site_box_alpha",
+                        )
+                    }
+                )
+                last_exc: Optional[BaseException] = None
+                for kw_try in fallbacks:
+                    for site_nm in (True, False):
+                        try:
+                            _attempt_plot(kw_try, site_nm)
+                            return
+                        except TypeError as te:
+                            last_exc = te
+                            try:
+                                plt.close("all")
+                            except Exception:
+                                pass
+                if last_exc is not None:
+                    raise last_exc
+
+            _plot_with_fallbacks(map_kw)
+            png_path = out_dir / f"npoap_occ_map.{ext}"
             if not png_path.is_file():
-                err = f"Fichier PNG introuvable : {png_path}"
+                err = f"Fichier carte introuvable : {png_path}"
         except Exception as ex:
             logger.error("plot_occ_map : %s", ex, exc_info=True)
             err = str(ex)
@@ -918,37 +1264,216 @@ class OccultationsTab(ttk.Frame):
             self._sora_pred_status.configure(text=f"Carte : erreur \u2014 {short}")
             logger.error("Carte : %s", err)
             return
+        self._pred_save_map_prefs()
+        self._pred_last_map_png_path = png_path
         self._sora_pred_status.configure(text=f"Carte générée : {png_path}")
         self._pred_map_placeholder.pack_forget()
-        try:
-            photo = tk.PhotoImage(file=str(png_path))
-            mw, mh = self._MAP_VIEW_W, self._MAP_VIEW_H
-            while photo.width() > mw or photo.height() > mh:
-                photo = photo.subsample(2, 2)
-        except tk.TclError as ex2:
-            logger.error("Lecture PNG pour affichage Tkinter : %s", ex2)
-            self._sora_pred_status.configure(text=f"Carte : impossible de charger le PNG ({ex2}).")
+        if png_path.suffix.lower() != ".png":
+            self._pred_map_tk_photo = None
+            self._pred_map_image.configure(image="")
+            self._sora_pred_status.configure(
+                text=f"Carte enregistrée ({png_path.suffix}) : {png_path} — aperçu intégré : PNG."
+            )
             return
-        self._pred_map_tk_photo = photo
-        self._pred_map_image.configure(image=photo)
+        self._pred_redraw_map_to_canvas()
+
+    def _load_pymovie_settings(self) -> None:
+        try:
+            if not self._pymovie_settings_path.is_file():
+                return
+            with self._pymovie_settings_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            p = str(data.get("conda_env_root", "") or "").strip()
+            if p:
+                self._pymovie_conda_root_var.set(p)
+        except Exception:
+            pass
+
+    def _save_pymovie_settings(self) -> None:
+        try:
+            payload = {"conda_env_root": (self._pymovie_conda_root_var.get() or "").strip()}
+            with self._pymovie_settings_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _browse_pymovie_conda_root(self) -> None:
+        cur = (self._pymovie_conda_root_var.get() or "").strip()
+        initial = cur if cur and Path(cur).is_dir() else str(Path.home())
+        d = filedialog.askdirectory(
+            parent=self.winfo_toplevel(),
+            title="Racine de l'environnement Conda (ex. …\\.conda\\envs\\pymovie)",
+            initialdir=initial,
+        )
+        if d:
+            self._pymovie_conda_root_var.set(d)
+            self._save_pymovie_settings()
+            if hasattr(self, "_pymovie_launch_status"):
+                self._pymovie_launch_status.configure(text="Chemin enregistré.")
+
+    def _pymovie_conda_python(self) -> Optional[Path]:
+        root = Path((self._pymovie_conda_root_var.get() or "").strip())
+        return _python_exe_in_conda_env(root)
+
+    def _launch_pymovie_external(self) -> None:
+        py = self._pymovie_conda_python()
+        root = Path((self._pymovie_conda_root_var.get() or "").strip())
+        if not root.is_dir():
+            messagebox.showerror(
+                "PyMovie",
+                "Le répertoire racine de l'environnement Conda est invalide ou introuvable.\n"
+                "Indiquez le dossier qui contient python.exe (ex. …\\.conda\\envs\\pymovie).",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if py is None:
+            messagebox.showerror(
+                "PyMovie",
+                f"Aucun interpréteur Python trouvé dans :\n{root}\n\n"
+                "Attendu : python.exe (Windows) ou bin/python (Linux, macOS).",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if self._pymovie_proc is not None and self._pymovie_proc.poll() is None:
+            messagebox.showinfo("PyMovie", "PyMovie semble déjà lancé.", parent=self.winfo_toplevel())
+            return
+        try:
+            self._pymovie_proc = subprocess.Popen(
+                [str(py), "-c", "from pymovie import main; main.main()"],
+                cwd=str(py.parent),
+            )
+            self._save_pymovie_settings()
+            if hasattr(self, "_pymovie_launch_status"):
+                self._pymovie_launch_status.configure(
+                    text=f"PyMovie démarré (PID {self._pymovie_proc.pid})."
+                )
+        except Exception as ex:
+            self._pymovie_proc = None
+            logger.exception("Lancement PyMovie")
+            messagebox.showerror(
+                "PyMovie",
+                f"Impossible de lancer PyMovie :\n{ex}",
+                parent=self.winfo_toplevel(),
+            )
+
+    def _launch_pyote_external(self) -> None:
+        py = self._pymovie_conda_python()
+        root = Path((self._pymovie_conda_root_var.get() or "").strip())
+        if not root.is_dir():
+            messagebox.showerror(
+                "PyOTE",
+                "Le répertoire racine de l'environnement Conda est invalide ou introuvable.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if py is None:
+            messagebox.showerror(
+                "PyOTE",
+                f"Aucun interpréteur Python trouvé dans :\n{root}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if self._pyote_proc is not None and self._pyote_proc.poll() is None:
+            messagebox.showinfo("PyOTE", "PyOTE semble déjà lancé.", parent=self.winfo_toplevel())
+            return
+        try:
+            self._pyote_proc = subprocess.Popen(
+                [str(py), "-c", "from pyoteapp import pyote; pyote.main()"],
+                cwd=str(py.parent),
+            )
+            self._save_pymovie_settings()
+            if hasattr(self, "_pymovie_launch_status"):
+                self._pymovie_launch_status.configure(
+                    text=f"PyOTE démarré (PID {self._pyote_proc.pid})."
+                )
+        except Exception as ex:
+            self._pyote_proc = None
+            logger.exception("Lancement PyOTE")
+            messagebox.showerror(
+                "PyOTE",
+                f"Impossible de lancer PyOTE :\n{ex}",
+                parent=self.winfo_toplevel(),
+            )
+
+    def _run_pymovie_installer(self) -> None:
+        """Ouvre une console qui exécute install_pymovie_env.bat (création env conda pymovie)."""
+        bat = self._project_root / "install_pymovie_env.bat"
+        if not bat.is_file():
+            messagebox.showerror(
+                "Installation PyMovie",
+                f"Script introuvable :\n{bat}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        bat_s = str(bat.resolve())
+        root_dir = str(self._project_root.resolve())
+        try:
+            # start : nouvelle fenêtre ; /k : laisser la console ouverte (logs, pause).
+            subprocess.Popen(
+                f'start "NPOAP - Installation PyMovie" cmd.exe /k call "{bat_s}"',
+                cwd=root_dir,
+                shell=True,
+            )
+        except Exception as ex:
+            logger.exception("Lancement install_pymovie_env.bat")
+            messagebox.showerror(
+                "Installation PyMovie",
+                f"Impossible de lancer l'installateur :\n{ex}",
+                parent=self.winfo_toplevel(),
+            )
 
     def _build_pymovie_panel(self, parent):
+        section = ttk.LabelFrame(parent, text="PyMovie et PyOTE (IOTA)", padding=10)
+        section.pack(fill=tk.BOTH, expand=True, anchor=tk.N)
+
+        install_row = ttk.Frame(section)
+        install_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(
+            install_row,
+            text="Installer l'environnement Conda (PyMovie + PyOTE)…",
+            command=self._run_pymovie_installer,
+        ).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(
-            parent,
-            text="PyMovie et PyOTE (IOTA)",
-            font=("Helvetica", 12, "bold"),
-        ).pack(anchor="w", pady=(0, 6))
+            install_row,
+            text="Ouvre une fenêtre console (conda create / pip). Journal : install_pymovie_env.log",
+            wraplength=420,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        intro = (
-            "PyMovie : photométrie par ouverture sur vidéos d'occultations stellaires.\n"
-            "PyOTE : analyse des temps / diffraction en Python, conçu pour compléter PyMovie.\n\n"
-            "Installez les paquets fournis par l'IOTA (Windows / Mac) et consultez le manuel PDF "
-            "et les tutoriels vidéo sur le site IOTA."
+        env_lf = ttk.LabelFrame(
+            section,
+            text="Environnement Conda",
+            padding=8,
         )
-        self._readonly_text(parent, intro, height=7)
+        env_lf.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(
+            env_lf,
+            text="Racine du préfixe Conda (dossier contenant python.exe) :",
+        ).pack(anchor="w")
+        path_row = ttk.Frame(env_lf)
+        path_row.pack(fill=tk.X, pady=(4, 6))
+        entry = ttk.Entry(path_row, textvariable=self._pymovie_conda_root_var)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        entry.bind("<FocusOut>", lambda _e: self._save_pymovie_settings())
+        ttk.Button(path_row, text="Parcourir…", command=self._browse_pymovie_conda_root).pack(
+            side=tk.LEFT
+        )
+        btn_row = ttk.Frame(env_lf)
+        btn_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(btn_row, text="Lancer PyMovie", command=self._launch_pymovie_external).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(btn_row, text="Lancer PyOTE", command=self._launch_pyote_external).pack(
+            side=tk.LEFT
+        )
+        self._pymovie_launch_status = ttk.Label(
+            env_lf,
+            text="Indiquez le chemin (ex. C:\\Users\\…\\.conda\\envs\\pymovie) puis lancez.",
+            wraplength=640,
+        )
+        self._pymovie_launch_status.pack(anchor="w", pady=(4, 0))
 
-        lf = ttk.LabelFrame(parent, text="Liens utiles", padding=8)
-        lf.pack(fill=tk.X, pady=(10, 0))
+        lf = ttk.LabelFrame(section, text="Liens utiles", padding=8)
+        lf.pack(fill=tk.X, pady=(0, 0))
         self._link_row(
             lf,
             "Page IOTA \u2014 PyMovie",
@@ -965,24 +1490,339 @@ class OccultationsTab(ttk.Frame):
             "https://occultations.org/documents/LimovieTutorialRollingShutter.pdf",
         )
 
-    def _build_sora_analysis_panel(self, parent):
-        ttk.Label(
-            parent,
-            text="SORA \u2014 analyse (courbes, cordes, occultation)",
-            font=("Helvetica", 12, "bold"),
-        ).pack(anchor="w", pady=(0, 6))
+    def _run_sora_analysis_installer(self) -> None:
+        """Ouvre une console qui exécute install_sora_analysis.bat (sora-astro dans astroenv)."""
+        bat = self._project_root / "install_sora_analysis.bat"
+        if not bat.is_file():
+            messagebox.showerror(
+                "Installation SORA",
+                f"Script introuvable :\n{bat}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        bat_s = str(bat.resolve())
+        root_dir = str(self._project_root.resolve())
+        try:
+            subprocess.Popen(
+                f'start "NPOAP - Installation SORA (analyse)" cmd.exe /k call "{bat_s}"',
+                cwd=root_dir,
+                shell=True,
+            )
+        except Exception as ex:
+            logger.exception("Lancement install_sora_analysis.bat")
+            messagebox.showerror(
+                "Installation SORA",
+                f"Impossible de lancer l'installateur :\n{ex}",
+                parent=self.winfo_toplevel(),
+            )
 
-        intro = (
-            "Après acquisition et photométrie, SORA permet la modélisation : LightCurve, cordes, "
-            "objet Occultation, etc.\n\n"
-            "SORA est installé avec le reste des paquets (requirements.txt) dans astroenv. "
-            "En dépannage Cartopy / GEOS, voir la doc SORA ou conda-forge.\n\n"
-            "Citation : Gomes-Júnior et al. (2022), MNRAS 511, 1167\u20131181, DOI 10.1093/mnras/stac032"
+    def _sora_analysis_set_status(self, text: str) -> None:
+        if hasattr(self, "_sora_analysis_status"):
+            self._sora_analysis_status.configure(text=text)
+
+    def _sora_lc_pick_file(self) -> None:
+        base = self._project_root / "output"
+        path = filedialog.askopenfilename(
+            title="Choisir un fichier de courbe de lumière (temps, flux)",
+            initialdir=str(base if base.is_dir() else self._project_root),
+            filetypes=[("Données", "*.dat *.txt *.csv"), ("Tous les fichiers", "*.*")],
         )
-        self._readonly_text(parent, intro, height=9)
+        if path:
+            self._sora_lc_file_var.set(path)
 
-        lf = ttk.LabelFrame(parent, text="Liens utiles", padding=8)
-        lf.pack(fill=tk.X, pady=(10, 0))
+    def _sora_lc_load_from_file(self) -> None:
+        path = Path((self._sora_lc_file_var.get() or "").strip())
+        if not path.is_file():
+            self._sora_analysis_set_status("Fichier LC introuvable.")
+            return
+        exptime = self._pred_parse_float(self._sora_lc_exptime_var.get(), -1.0)
+        if exptime <= 0:
+            self._sora_analysis_set_status("Exptime invalide (doit être > 0).")
+            return
+        raw_cols = (self._sora_lc_usecols_var.get() or "0,1").replace(";", ",")
+        try:
+            usecols = [int(p.strip()) for p in raw_cols.split(",") if p.strip()]
+        except ValueError:
+            self._sora_analysis_set_status("usecols invalide (ex: 0,1).")
+            return
+        if len(usecols) != 2:
+            self._sora_analysis_set_status("usecols doit contenir 2 colonnes: temps, flux.")
+            return
+        try:
+            from sora import LightCurve
+
+            lc = LightCurve(name=path.stem, file=str(path), exptime=float(exptime), usecols=usecols)
+        except Exception as ex:
+            logger.error("SORA LightCurve load: %s", ex, exc_info=True)
+            self._sora_analysis_set_status(f"Chargement LC impossible: {ex}")
+            return
+        self._sora_lc_obj = lc
+        self._sora_lc_fit = None
+        self._sora_analysis_result.delete("1.0", tk.END)
+        self._sora_analysis_result.insert(
+            "1.0",
+            (
+                f"LC chargée: {path.name}\n"
+                f"Initial: {getattr(lc, 'initial_time', '?')}\n"
+                f"Mean:    {getattr(lc, 'time_mean', '?')}\n"
+                f"End:     {getattr(lc, 'end_time', '?')}\n"
+                f"Exptime: {getattr(lc, 'exptime', '?')} s\n"
+                f"Cycle:   {getattr(lc, 'cycle', '?')} s\n"
+            ),
+        )
+        self._sora_analysis_set_status("LC chargée. Lancez Auto-détection ou Ajustement.")
+
+    def _sora_lc_autodetect(self) -> None:
+        lc = getattr(self, "_sora_lc_obj", None)
+        if lc is None:
+            self._sora_analysis_set_status("Chargez d'abord une courbe de lumière.")
+            return
+        self._sora_analysis_set_status("Auto-détection en cours (occ_detect)…")
+
+        def work():
+            try:
+                d = lc.occ_detect()
+            except Exception as ex:
+                logger.error("SORA occ_detect: %s", ex, exc_info=True)
+                self.after(0, lambda: self._sora_analysis_set_status(f"Auto-détection échouée: {ex}"))
+                return
+
+            def done():
+                self._sora_lc_detect = d
+                imm = float(d.get("immersion_time"))
+                eme = float(d.get("emersion_time"))
+                terr = float(d.get("time_err", 0.05))
+                self._sora_lc_imm_var.set(f"{imm:.6f}")
+                self._sora_lc_eme_var.set(f"{eme:.6f}")
+                self._sora_lc_delta_var.set(f"{max(terr * 5.0, 0.001):.6f}")
+                self._sora_lc_tmin_var.set(f"{imm - 5.0:.6f}")
+                self._sora_lc_tmax_var.set(f"{eme + 5.0:.6f}")
+                self._sora_analysis_result.insert(
+                    tk.END,
+                    (
+                        "\nAuto-détection:\n"
+                        + "\n".join(f"  {k}: {v}" for k, v in d.items() if k != "occ_mask")
+                        + "\n"
+                    ),
+                )
+                self._sora_analysis_set_status("Auto-détection OK. Vérifiez les bornes puis lancez l'ajustement.")
+
+            self.after(0, done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sora_lc_run_fit(self) -> None:
+        lc = getattr(self, "_sora_lc_obj", None)
+        if lc is None:
+            self._sora_analysis_set_status("Chargez d'abord une courbe de lumière.")
+            return
+        vel = self._pred_parse_float(self._sora_lc_vel_var.get(), 22.0)
+        dist = self._pred_parse_float(self._sora_lc_dist_var.get(), 15.0)
+        d_star = self._pred_parse_float(self._sora_lc_dstar_var.get(), 0.2)
+        imm = self._pred_parse_float(self._sora_lc_imm_var.get(), float("nan"))
+        eme = self._pred_parse_float(self._sora_lc_eme_var.get(), float("nan"))
+        delta_t = max(self._pred_parse_float(self._sora_lc_delta_var.get(), 0.1), 1e-6)
+        tmin = self._pred_parse_float(self._sora_lc_tmin_var.get(), imm - 5.0)
+        tmax = self._pred_parse_float(self._sora_lc_tmax_var.get(), eme + 5.0)
+        flux_min = self._pred_parse_float(self._sora_lc_fmin_var.get(), 0.0)
+        flux_max = self._pred_parse_float(self._sora_lc_fmax_var.get(), 1.0)
+        loop = max(100, self._pred_parse_int(self._sora_lc_loop_var.get(), 2000))
+        threads = max(1, self._pred_parse_int(self._sora_lc_threads_var.get(), 4))
+        method = (self._sora_lc_method_var.get() or "ls").strip().lower()
+        if method not in ("ls", "de", "chisqr", "fastchi"):
+            method = "ls"
+        self._sora_analysis_set_status("Ajustement SORA en cours (occ_lcfit)…")
+
+        def work():
+            try:
+                lc.set_vel(vel=float(vel))
+                lc.set_dist(dist=float(dist))
+                lc.set_star_diam(d_star=float(d_star))
+                fit = lc.occ_lcfit(
+                    immersion_time=float(imm),
+                    emersion_time=float(eme),
+                    delta_t=float(delta_t),
+                    flux_min=float(flux_min),
+                    flux_max=float(flux_max),
+                    tmin=float(tmin),
+                    tmax=float(tmax),
+                    sigma="auto",
+                    sigma_result=1,
+                    loop=int(loop),
+                    method=method,
+                    threads=int(threads),
+                )
+            except Exception as ex:
+                logger.error("SORA occ_lcfit: %s", ex, exc_info=True)
+                self.after(0, lambda: self._sora_analysis_set_status(f"Ajustement échoué: {ex}"))
+                return
+
+            def done():
+                self._sora_lc_fit = fit
+                self._sora_analysis_result.insert(tk.END, "\nAjustement:\n" + str(fit) + "\n")
+                self._sora_analysis_result.see(tk.END)
+                self._sora_analysis_set_status("Ajustement terminé. Bouton χ² disponible.")
+
+            self.after(0, done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sora_lc_plot_chi2(self) -> None:
+        fit = getattr(self, "_sora_lc_fit", None)
+        if fit is None:
+            self._sora_analysis_set_status("Aucun fit disponible. Lancez d'abord occ_lcfit.")
+            return
+        try:
+            fit.plot_chi2()
+            self._sora_analysis_set_status("Graphiques χ² générés.")
+        except Exception as ex:
+            logger.error("SORA plot_chi2: %s", ex, exc_info=True)
+            self._sora_analysis_set_status(f"Affichage χ² échoué: {ex}")
+
+    def _build_sora_analysis_panel(self, parent):
+        section = ttk.LabelFrame(parent, text="Analyse SORA (IOTA)", padding=10)
+        section.pack(fill=tk.BOTH, expand=True, anchor=tk.N)
+
+        install_row = ttk.Frame(section)
+        install_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(
+            install_row,
+            text="Installer / mettre à jour sora-astro (environnement astroenv)…",
+            command=self._run_sora_analysis_installer,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(
+            install_row,
+            text="Ouvre une console (pip dans conda astroenv). Journal : install_sora_analysis.log",
+            wraplength=420,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        note = (
+            "Périmètre implémenté : analyse de courbe photométrique (LightCurve fichier, paramètres physiques, "
+            "occ_detect, occ_lcfit, méthodes/threads, résultats et χ²).\n"
+            "Hors périmètre pour l’instant : cordes multiples, modèle 3D OBJ, texture, fit_shape, "
+            "boucles d’orientation."
+        )
+        self._readonly_text(section, note, height=4)
+
+        lc_lf = ttk.LabelFrame(section, text="Flux LightCurve (SORA)", padding=8)
+        lc_lf.pack(fill=tk.X, pady=(8, 6))
+
+        self._sora_lc_obj = None
+        self._sora_lc_fit = None
+        self._sora_lc_detect = None
+        self._sora_lc_file_var = tk.StringVar(value="")
+        self._sora_lc_exptime_var = tk.StringVar(value="0.1")
+        self._sora_lc_usecols_var = tk.StringVar(value="0,1")
+        self._sora_lc_vel_var = tk.StringVar(value="22.0")
+        self._sora_lc_dist_var = tk.StringVar(value="15.0")
+        self._sora_lc_dstar_var = tk.StringVar(value="0.2")
+        self._sora_lc_imm_var = tk.StringVar(value="")
+        self._sora_lc_eme_var = tk.StringVar(value="")
+        self._sora_lc_delta_var = tk.StringVar(value="0.1")
+        self._sora_lc_tmin_var = tk.StringVar(value="")
+        self._sora_lc_tmax_var = tk.StringVar(value="")
+        self._sora_lc_fmin_var = tk.StringVar(value="0.0")
+        self._sora_lc_fmax_var = tk.StringVar(value="1.0")
+        self._sora_lc_loop_var = tk.StringVar(value="2000")
+        self._sora_lc_threads_var = tk.StringVar(value="4")
+        self._sora_lc_method_var = tk.StringVar(value="ls")
+
+        r = 0
+        ttk.Label(lc_lf, text="Fichier LC (temps, flux)").grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(lc_lf, textvariable=self._sora_lc_file_var).grid(row=r, column=1, sticky="ew", pady=2)
+        ttk.Button(lc_lf, text="Parcourir…", command=self._sora_lc_pick_file).grid(
+            row=r, column=2, padx=(6, 0), pady=2
+        )
+        r += 1
+        ttk.Label(lc_lf, text="Exptime (s)").grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(lc_lf, textvariable=self._sora_lc_exptime_var, width=10).grid(row=r, column=1, sticky="w", pady=2)
+        ttk.Label(lc_lf, text="usecols (temps,flux)").grid(row=r, column=1, sticky="e", padx=(0, 84), pady=2)
+        ttk.Entry(lc_lf, textvariable=self._sora_lc_usecols_var, width=10).grid(row=r, column=2, sticky="w", pady=2)
+        r += 1
+        ttk.Button(lc_lf, text="Charger LightCurve", command=self._sora_lc_load_from_file).grid(
+            row=r, column=0, sticky="w", pady=(4, 2)
+        )
+        ttk.Button(lc_lf, text="Auto-détection (occ_detect)", command=self._sora_lc_autodetect).grid(
+            row=r, column=1, sticky="w", pady=(4, 2)
+        )
+        r += 1
+
+        phys = ttk.LabelFrame(lc_lf, text="Physique / Fit", padding=6)
+        phys.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(6, 2))
+        rr = 0
+        ttk.Label(phys, text="vel (km/s)").grid(row=rr, column=0, sticky="w", padx=(0, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_vel_var, width=8).grid(row=rr, column=1, sticky="w", pady=1)
+        ttk.Label(phys, text="dist (AU)").grid(row=rr, column=2, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_dist_var, width=8).grid(row=rr, column=3, sticky="w", pady=1)
+        ttk.Label(phys, text="d_star (km)").grid(row=rr, column=4, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_dstar_var, width=8).grid(row=rr, column=5, sticky="w", pady=1)
+        rr += 1
+        ttk.Label(phys, text="immersion").grid(row=rr, column=0, sticky="w", padx=(0, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_imm_var, width=12).grid(row=rr, column=1, sticky="w", pady=1)
+        ttk.Label(phys, text="emersion").grid(row=rr, column=2, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_eme_var, width=12).grid(row=rr, column=3, sticky="w", pady=1)
+        ttk.Label(phys, text="delta_t").grid(row=rr, column=4, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_delta_var, width=8).grid(row=rr, column=5, sticky="w", pady=1)
+        rr += 1
+        ttk.Label(phys, text="tmin").grid(row=rr, column=0, sticky="w", padx=(0, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_tmin_var, width=12).grid(row=rr, column=1, sticky="w", pady=1)
+        ttk.Label(phys, text="tmax").grid(row=rr, column=2, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_tmax_var, width=12).grid(row=rr, column=3, sticky="w", pady=1)
+        ttk.Label(phys, text="flux min/max").grid(row=rr, column=4, sticky="w", padx=(12, 4), pady=1)
+        ff = ttk.Frame(phys)
+        ff.grid(row=rr, column=5, sticky="w", pady=1)
+        ttk.Entry(ff, textvariable=self._sora_lc_fmin_var, width=5).pack(side=tk.LEFT)
+        ttk.Label(ff, text="/").pack(side=tk.LEFT, padx=2)
+        ttk.Entry(ff, textvariable=self._sora_lc_fmax_var, width=5).pack(side=tk.LEFT)
+        rr += 1
+        ttk.Label(phys, text="Méthode").grid(row=rr, column=0, sticky="w", padx=(0, 4), pady=1)
+        ttk.Combobox(
+            phys,
+            textvariable=self._sora_lc_method_var,
+            values=("ls", "de", "chisqr", "fastchi"),
+            width=10,
+            state="readonly",
+        ).grid(row=rr, column=1, sticky="w", pady=1)
+        ttk.Label(phys, text="loops").grid(row=rr, column=2, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_loop_var, width=10).grid(row=rr, column=3, sticky="w", pady=1)
+        ttk.Label(phys, text="threads").grid(row=rr, column=4, sticky="w", padx=(12, 4), pady=1)
+        ttk.Entry(phys, textvariable=self._sora_lc_threads_var, width=10).grid(row=rr, column=5, sticky="w", pady=1)
+        rr += 1
+        ttk.Button(phys, text="Lancer occ_lcfit", command=self._sora_lc_run_fit).grid(
+            row=rr, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Button(phys, text="Afficher χ²", command=self._sora_lc_plot_chi2).grid(
+            row=rr, column=1, sticky="w", pady=(6, 0)
+        )
+        ttk.Label(
+            phys,
+            text="Conseil SORA: threads <= coeurs CPU - 1 pour éviter de figer la machine.",
+            font=("TkDefaultFont", 8),
+        ).grid(row=rr, column=2, columnspan=4, sticky="w", pady=(6, 0))
+        lc_lf.columnconfigure(1, weight=1)
+
+        self._sora_analysis_status = ttk.Label(section, text="", wraplength=980)
+        self._sora_analysis_status.pack(anchor="w", pady=(2, 0))
+
+        rf = ttk.LabelFrame(section, text="Résultats (Auto-détection + Fit)", padding=4)
+        rf.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        rw = ttk.Frame(rf)
+        rw.pack(fill=tk.BOTH, expand=True)
+        self._sora_analysis_result = tk.Text(
+            rw, height=10, wrap=tk.NONE, font=("Consolas", 8), relief=tk.FLAT, padx=4, pady=4
+        )
+        rsb = ttk.Scrollbar(rw, command=self._sora_analysis_result.yview)
+        self._sora_analysis_result.configure(yscrollcommand=rsb.set)
+        self._sora_analysis_result.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        rsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._sora_analysis_result.insert(
+            "1.0",
+            "Workflow: 1) Choisir fichier LC  2) Charger  3) Auto-détection  4) Ajuster occ_lcfit  5) χ².",
+        )
+        self._sora_analysis_set_status("Prêt pour l'analyse LightCurve SORA (sans couche 3D).")
+
+        lf = ttk.LabelFrame(section, text="Liens utiles", padding=8)
+        lf.pack(fill=tk.X, pady=(8, 0))
         self._link_row(lf, "Dépôt GitHub SORA", "https://github.com/riogroup/SORA")
         self._link_row(lf, "Documentation ReadTheDocs", "https://sora.readthedocs.io/")
         self._link_row(
