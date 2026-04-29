@@ -30,7 +30,7 @@ if not defined CONDA_ROOT if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" (
     for /f "delims=" %%i in ('"%USERPROFILE%\anaconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
 )
 if not defined CONDA_ROOT (
-    echo ERREUR: conda introuvable. Installez Miniconda et l'environnement astroenv (installation.bat).
+    echo ERREUR: conda introuvable. Installez Miniconda et l'environnement astroenv ^(installation.bat^).
     pause
     exit /b 1
 )
