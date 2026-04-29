@@ -134,7 +134,7 @@ REM ===================================================================
 echo %BLUE%=== ETAPE 2: Verification de la configuration systeme ===%RESET%
 echo.
 
-REM MSVC, WSL, Ubuntu, Astrometry, KBMOD, CMake, Prospector : install_*.bat dans ce dossier
+REM MSVC, WSL, Ubuntu, Astrometry, KBMOD, CMake : install_*.bat ; Prospector WSL : Installation_fsps\prospector.bat manuel
 echo --- Controles generaux ---
 echo Verification de l'architecture...
 if /i "!PROCESSOR_ARCHITECTURE!"=="AMD64" (
@@ -704,8 +704,7 @@ echo   CMake .......................... install_cmake.bat
 echo   WSL ............................ install_wsl.bat
 echo   Ubuntu (distro WSL) ............ install_ubuntu_wsl.bat
 echo   Astrometry.net dans WSL ........ install_astrometry_wsl.bat
-echo   KBMOD sous WSL/Linux ........... install_kbmod_wsl.bat
-echo   Prospector Windows (astroenv) .. INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat / .ps1
+echo   KBMOD sous WSL ^(installation auto^) .. install_kbmod_wsl.bat
 echo   Prospector + FSPS via WSL ...... Installation_fsps\prospector.bat
 echo   SORA ^(depannage seul^) ....... INSTALLER_SORA_ASTROENV.bat  ^(sinon : requirements_install_optionnels.txt^)
 echo.
