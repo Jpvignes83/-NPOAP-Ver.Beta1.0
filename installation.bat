@@ -482,6 +482,23 @@ if !CONDA_FINAL_EC! neq 0 (
     exit /b 1
 )
 
+REM Miniconda AllUsers ^(ProgramData^) : sans ACE supplementaire, pip en session utilisateur
+REM refuse souvent l'ecriture dans Lib\site-packages ^(WinError 5 / Acces refuse^).
+REM On accorde au groupe BUILTIN\Users ^(SID fixe^) la modification avec heritage sur tout l'env conda.
+set "ASTRO_ENV_ROOT=!CONDA_INST_ROOT!\envs\%ENV_NAME%"
+if exist "!ASTRO_ENV_ROOT!" (
+    echo %BLUE%Droits d'ecriture sur l'environnement conda ^(pip, paquets utilisateur^)...%RESET%
+    icacls "!ASTRO_ENV_ROOT!" /grant "*S-1-5-32-545:(OI)(CI)M" /T >nul 2>&1
+    if !errorLevel! equ 0 (
+        echo %GREEN%OK : le groupe Utilisateurs peut modifier !ASTRO_ENV_ROOT! ^(pip sans administrateur^).%RESET%
+        >>"!INSTALL_COMPLET_LOG!" echo Droits pip: icacls Utilisateurs /M sur !ASTRO_ENV_ROOT!
+    ) else (
+        echo %YELLOW%ATTENTION: icacls a echoue - si pip indique « Acces refuse » sur site-packages, relancez en administrateur :%RESET%
+        echo   icacls "!ASTRO_ENV_ROOT!" /grant "*S-1-5-32-545:(OI)(CI)M" /T
+        >>"!INSTALL_COMPLET_LOG!" echo ATTENTION: icacls sur env conda a echoue ^(code !errorLevel!^)
+    )
+)
+
 echo %GREEN%Environnement %ENV_NAME% cree avec succes!%RESET%
 echo.
 
