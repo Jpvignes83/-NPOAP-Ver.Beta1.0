@@ -7,10 +7,8 @@ Executer les scripts depuis le dossier NPOAP (copie d'installation ou deploiemen
   install_wsl.bat                  Sous-systeme Windows pour Linux
   install_ubuntu_wsl.bat         Distribution Ubuntu dans WSL
   install_astrometry_wsl.bat     Paquet astrometry.net dans WSL
-  install_kbmod_wsl.bat          Aide + doc KBMOD sous WSL/Linux
-  INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat   Prospector Windows dans astroenv (lance le .ps1)
-  INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1   Idem + options (-InstallFSPS, -CondaEnv, ...)
-  Installation_fsps/prospector.bat           Prospector + FSPS via WSL (install_prospector_wsl.sh) ; fallback si .ps1 echoue
+  install_kbmod_wsl.bat          KBMOD sous WSL (installation auto via scripts/install_kbmod_wsl.sh)
+  Installation_fsps/prospector.bat           Prospector + FSPS via WSL ^(manuel ; plus dans install_optionnels.bat^)
   INSTALLER_SORA_ASTROENV.bat                Depannage : mettre a jour sora-astro seul (sinon inclus dans requirements_install_optionnels.txt)
   requirements_install_optionnels.txt         PHOEBE, rebound, ultranest, SORA (sora-astro), SNe Ia, STDPipe+GP
                                              installe en une etape par install_optionnels.bat
