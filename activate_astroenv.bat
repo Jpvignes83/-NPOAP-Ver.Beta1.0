@@ -1,13 +1,7 @@
 @echo off
-setlocal EnableDelayedExpansion
-REM NPOAP — Reinstalle ou met a jour uniquement SORA (sora-astro) dans « astroenv ».
-REM Pip cible uniquement l'interprete conda de l'env ^(pas AppData\Roaming\Python311^).
-
-chcp 65001 >nul
-echo ========================================
-echo Installation SORA (sora-astro) dans astroenv
-echo ========================================
-echo.
+REM Activation astroenv pour scripts NPOAP (sans conda init dans cmd).
+REM Definit PY_ASTRO = interprete Python de l'environnement (chemins pip explicites).
+REM Pip et imports ignorent le site utilisateur Windows %AppData%\Roaming\Python\Python311 (PYTHONNOUSERSITE=1).
 
 cd /d "%~dp0"
 
@@ -33,55 +27,25 @@ if not defined CONDA_ROOT if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" (
 )
 
 if not defined CONDA_ROOT (
-    echo ERREUR: conda introuvable.
-    pause
+    echo [ERREUR] conda introuvable.
     exit /b 1
 )
 
 if not exist "%CONDA_ROOT%\Scripts\activate.bat" (
-    echo ERREUR: activate.bat introuvable dans "%CONDA_ROOT%\Scripts"
-    pause
+    echo [ERREUR] activate.bat introuvable dans "%CONDA_ROOT%\Scripts"
     exit /b 1
 )
 
-echo Activation de l'environnement astroenv...
 call "%CONDA_ROOT%\Scripts\activate.bat" astroenv
-if errorlevel 1 (
-    echo ERREUR: Impossible d'activer l'environnement astroenv.
-    echo Creez-le par exemple avec : conda create -n astroenv python=3.11 -y
-    pause
-    exit /b 1
-)
+if errorlevel 1 exit /b 1
 
 set "PYTHONNOUSERSITE=1"
 set "PIP_USER="
 set "PY_ASTRO=%CONDA_ROOT%\envs\astroenv\python.exe"
-if not exist "!PY_ASTRO!" (
-    echo ERREUR: python.exe astroenv introuvable : !PY_ASTRO!
-    pause
+
+if not exist "%PY_ASTRO%" (
+    echo [ERREUR] Environnement astroenv incomplet : "%PY_ASTRO%" introuvable.
     exit /b 1
 )
 
-echo.
-echo Installation via pip ^(interprete : !PY_ASTRO!^)...
-"!PY_ASTRO!" -m pip install --upgrade pip
-"!PY_ASTRO!" -m pip install --upgrade "setuptools<81"
-"!PY_ASTRO!" -m pip install "sora-astro"
-
-if errorlevel 1 (
-    echo.
-    echo ERREUR lors de l'installation de sora-astro.
-    echo En cas d'echec sur Cartopy / GEOS, consultez la doc SORA et les prerequis systeme.
-    pause
-    exit /b 1
-)
-
-echo.
-echo ========================================
-echo Installation terminee avec succes.
-echo ========================================
-echo.
-echo sora-astro est a jour dans astroenv. Relancez NPOAP depuis cet environnement.
-echo.
-pause
 exit /b 0

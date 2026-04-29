@@ -15,6 +15,8 @@ setlocal enabledelayedexpansion
 
 REM Toujours se placer dans le dossier du script ^(double-clic / start : evite xcopy depuis le mauvais repertoire^)
 cd /d "%~dp0"
+REM Chemin du .bat dans une variable : evite les bugs ^( "... (1) ..." ^) quand %%~dp0 est mis dans des blocs ^( ... ^).
+set "INSTALL_BAT_DIR=%~dp0"
 
 REM Pas de sequences ANSI : sortie texte brut uniquement (compatible toutes consoles)
 set "GREEN="
@@ -168,7 +170,7 @@ echo NPOAP - Journal d'installation complet (install_complet.log^)
 echo Demarrage session: %date% %time%
 echo Dossier d'installation: !INSTALL_DIR!
 echo Environnement conda prevu: %ENV_NAME%
-echo Dossier du script installation.bat: %~dp0
+echo Dossier du script installation.bat: !INSTALL_BAT_DIR!
 echo.
 echo Remarque : accord de licence, verification administrateur et saisie du dossier ^(etape 1^) ont precede ce fichier.
 echo ============================================================
@@ -276,7 +278,7 @@ if not defined SKIP_CONDA (
         bitsadmin /transfer !BITSJOB! /download /priority NORMAL "!CONDA_URL!" "!CONDA_INSTALLER!"
         if !errorLevel! equ 0 if exist "!CONDA_INSTALLER!" set "DL_OK=1"
     )
-    set "MCDLPS1=%~dp0installation_miniconda_download.ps1"
+    set "MCDLPS1=!INSTALL_BAT_DIR!installation_miniconda_download.ps1"
     if "!DL_OK!"=="0" if exist "!MCDLPS1!" (
         echo Methode B : PowerShell - barre ASCII + sortie rattachee a cette fenetre...
         if exist "!PSFULL!" (
@@ -523,7 +525,7 @@ if exist "!INSTALL_DIR!" (
 )
 
 set "SKIP_PROJECT_COPY="
-set "SRC_CMP=%~dp0"
+set "SRC_CMP=!INSTALL_BAT_DIR!"
 if "!SRC_CMP:~-1!"=="\" set "SRC_CMP=!SRC_CMP:~0,-1!"
 set "DST_CMP=!INSTALL_DIR!"
 if "!DST_CMP:~-1!"=="\" set "DST_CMP=!DST_CMP:~0,-1!"
@@ -538,7 +540,7 @@ if defined SKIP_PROJECT_COPY (
     REM xcopy : 0 ok ; 1 aucun fichier a copier ; 2 arret utilisateur ; 4 erreur init ^(chemins, memoire^)
     if !XCOPY_EC! geq 4 (
         echo %YELLOW%ATTENTION: xcopy code !XCOPY_EC! - tentative robocopy...%RESET%
-        robocopy "%~dp0." "!INSTALL_DIR!" /E /COPY:DAT /R:2 /W:3 /XD __pycache__ .git .conda .cache /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS /NP
+        robocopy "!INSTALL_BAT_DIR!." "!INSTALL_DIR!" /E /COPY:DAT /R:2 /W:3 /XD __pycache__ .git .conda .cache /XF *.pyc /NFL /NDL /NJH /NJS /NC /NS /NP
         if errorlevel 8 (
             echo %RED%ERREUR: copie vers !INSTALL_DIR! echouee ^(xcopy code !XCOPY_EC!, robocopy ^>=8^).%RESET%
         )
@@ -556,7 +558,7 @@ attrib -R "!INSTALL_DIR!\requirements.txt" >nul 2>&1
 attrib -R "!INSTALL_DIR!\requirements_install_core.txt" >nul 2>&1
 
 REM pip exige des fichiers requirements en UTF-8 ^(pas UTF-16 / Unicode Bloc-notes^)
-set "NORM_PS=%~dp0normalize_requirements_utf8.ps1"
+set "NORM_PS=!INSTALL_BAT_DIR!normalize_requirements_utf8.ps1"
 if exist "!NORM_PS!" (
     echo Normalisation UTF-8 des fichiers requirements pour pip...
     powershell -NoProfile -ExecutionPolicy Bypass -File "!NORM_PS!" "!INSTALL_DIR!\requirements_install_core.txt"
@@ -574,21 +576,30 @@ if !errorLevel! neq 0 (
     exit /b 1
 )
 
+set "PYTHONNOUSERSITE=1"
+set "PIP_USER="
+set "PY_ENV=!CONDA_INST_ROOT!\envs\%ENV_NAME%\python.exe"
+if not exist "!PY_ENV!" (
+    echo %RED%ERREUR: Python conda introuvable : !PY_ENV!%RESET%
+    pause
+    exit /b 1
+)
+
 echo Mise a jour de pip, setuptools ^(version compatible STDPipe^) et wheel...
-python -m pip install --upgrade pip "setuptools<81" wheel 1> "%TEMP%\npoap_pip_up.log" 2>&1
+"!PY_ENV!" -m pip install --upgrade pip "setuptools<81" wheel 1> "%TEMP%\npoap_pip_up.log" 2>&1
 set "PIP_UP_EC=!errorlevel!"
 type "%TEMP%\npoap_pip_up.log"
 type "%TEMP%\npoap_pip_up.log" >> "!INSTALL_COMPLET_LOG!"
 
 echo Installation des dependances ^(cœur PyPI^) depuis requirements_install_core.txt...
-python -m pip install --prefer-binary -r "!INSTALL_DIR!\requirements_install_core.txt" 1> "%TEMP%\npoap_pip_core.log" 2>&1
+"!PY_ENV!" -m pip install --prefer-binary -r "!INSTALL_DIR!\requirements_install_core.txt" 1> "%TEMP%\npoap_pip_core.log" 2>&1
 set "PIP_CORE_EC=!errorlevel!"
 type "%TEMP%\npoap_pip_core.log"
 type "%TEMP%\npoap_pip_core.log" >> "!INSTALL_COMPLET_LOG!"
 
 if !PIP_CORE_EC! neq 0 (
     echo %YELLOW%ATTENTION: pip a signale une erreur. Verifiez les lignes ci-dessus ^(reseau, proxy, antivirus^).%RESET%
-    echo Pour reessayer : conda activate %ENV_NAME% ^& cd /d "!INSTALL_DIR!" ^& python -m pip install --prefer-binary -r requirements_install_core.txt
+    echo Pour reessayer : cd /d "!INSTALL_DIR!" ^& "!PY_ENV!" -m pip install --prefer-binary -r requirements_install_core.txt
 ) else (
     echo %GREEN%Dependances cœur installees avec succes!%RESET%
     echo %YELLOW%Optionnel : PHOEBE, ezpadova ^(git^), lightkurve, pip complet ^>^> pip install -r requirements.txt ^(Git requis^)%RESET%
@@ -606,16 +617,17 @@ REM Lanceur unique: LANCER_NPOAP_ASTROENV.bat
 if exist "%INSTALL_DIR%\LANCEMENT.bat" del /f /q "%INSTALL_DIR%\LANCEMENT.bat" >nul 2>&1
 if exist "%INSTALL_DIR%\lancement.bat" del /f /q "%INSTALL_DIR%\lancement.bat" >nul 2>&1
 
-if exist "%~dp0LANCER_NPOAP_ASTROENV.bat" (
-    copy /Y "%~dp0LANCER_NPOAP_ASTROENV.bat" "%INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat" >nul
+if exist "!INSTALL_BAT_DIR!LANCER_NPOAP_ASTROENV.bat" (
+    copy /Y "!INSTALL_BAT_DIR!LANCER_NPOAP_ASTROENV.bat" "%INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat" >nul
     echo %GREEN%Script de lancement copie: %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat%RESET%
 ) else (
     echo %YELLOW%LANCER_NPOAP_ASTROENV.bat absent du package - generation d'un lanceur minimal vers %ENV_NAME%...%RESET%
     (
         echo @echo off
         echo call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
+        echo set "PYTHONNOUSERSITE=1"
         echo cd /d "%INSTALL_DIR%"
-        echo python main.py
+        echo "!CONDA_INST_ROOT!\envs\%ENV_NAME%\python.exe" main.py
         echo pause
     ) > "%INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat"
     echo %GREEN%Script de lancement cree: %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat%RESET%
@@ -635,7 +647,7 @@ cd /d "%INSTALL_DIR%"
 if exist "test_installation.py" (
     echo Execution des tests...
     set "PYTHONUTF8=1"
-    python test_installation.py 1> "%TEMP%\npoap_test_inst.log" 2>&1
+    "!PY_ENV!" test_installation.py 1> "%TEMP%\npoap_test_inst.log" 2>&1
     set "PYTHONUTF8="
     set "TEST_INST_EC=!errorlevel!"
     type "%TEMP%\npoap_test_inst.log"
@@ -690,10 +702,11 @@ echo.
 echo Pour lancer NPOAP, utilisez:
 echo   %INSTALL_DIR%\LANCER_NPOAP_ASTROENV.bat
 echo.
-echo Ou depuis la ligne de commande:
+echo Ou depuis la ligne de commande ^(sans melanger avec AppData\Roaming\Python311^):
 echo   call "!CONDA_INST_ROOT!\Scripts\activate.bat" %ENV_NAME%
+echo   set PYTHONNOUSERSITE=1
 echo   cd %INSTALL_DIR%
-echo   python main.py
+echo   "!CONDA_INST_ROOT!\envs\%ENV_NAME%\python.exe" main.py
 echo.
 echo ------------------------------------------------------------
 echo   Composants optionnels (scripts dans le dossier NPOAP)

@@ -1,11 +1,9 @@
 @echo off
 setlocal EnableDelayedExpansion
-REM NPOAP — Reinstalle ou met a jour uniquement SORA (sora-astro) dans « astroenv ».
-REM Pip cible uniquement l'interprete conda de l'env ^(pas AppData\Roaming\Python311^).
+REM Script pour installer ccdproc dans l'environnement conda astroenv uniquement.
 
-chcp 65001 >nul
 echo ========================================
-echo Installation SORA (sora-astro) dans astroenv
+echo Installation de ccdproc
 echo ========================================
 echo.
 
@@ -25,12 +23,6 @@ if not defined CONDA_ROOT if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" 
 if not defined CONDA_ROOT if exist "%LOCALAPPDATA%\miniconda3\Scripts\conda.exe" (
     for /f "delims=" %%i in ('"%LOCALAPPDATA%\miniconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
 )
-if not defined CONDA_ROOT if exist "%ProgramData%\Anaconda3\Scripts\conda.exe" (
-    for /f "delims=" %%i in ('"%ProgramData%\Anaconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
-)
-if not defined CONDA_ROOT if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" (
-    for /f "delims=" %%i in ('"%USERPROFILE%\anaconda3\Scripts\conda.exe" info --base 2^>nul') do set "CONDA_ROOT=%%i"
-)
 
 if not defined CONDA_ROOT (
     echo ERREUR: conda introuvable.
@@ -38,17 +30,12 @@ if not defined CONDA_ROOT (
     exit /b 1
 )
 
-if not exist "%CONDA_ROOT%\Scripts\activate.bat" (
-    echo ERREUR: activate.bat introuvable dans "%CONDA_ROOT%\Scripts"
-    pause
-    exit /b 1
-)
-
 echo Activation de l'environnement astroenv...
 call "%CONDA_ROOT%\Scripts\activate.bat" astroenv
+
 if errorlevel 1 (
-    echo ERREUR: Impossible d'activer l'environnement astroenv.
-    echo Creez-le par exemple avec : conda create -n astroenv python=3.11 -y
+    echo ERREUR: Impossible d'activer l'environnement astroenv
+    echo Assurez-vous que conda est installe et que l'environnement astroenv existe.
     pause
     exit /b 1
 )
@@ -57,31 +44,28 @@ set "PYTHONNOUSERSITE=1"
 set "PIP_USER="
 set "PY_ASTRO=%CONDA_ROOT%\envs\astroenv\python.exe"
 if not exist "!PY_ASTRO!" (
-    echo ERREUR: python.exe astroenv introuvable : !PY_ASTRO!
+    echo ERREUR: !PY_ASTRO! introuvable
     pause
     exit /b 1
 )
 
 echo.
-echo Installation via pip ^(interprete : !PY_ASTRO!^)...
-"!PY_ASTRO!" -m pip install --upgrade pip
-"!PY_ASTRO!" -m pip install --upgrade "setuptools<81"
-"!PY_ASTRO!" -m pip install "sora-astro"
+echo Installation de ccdproc^>=2.4.0...
+"!PY_ASTRO!" -m pip install "ccdproc>=2.4.0"
 
 if errorlevel 1 (
     echo.
-    echo ERREUR lors de l'installation de sora-astro.
-    echo En cas d'echec sur Cartopy / GEOS, consultez la doc SORA et les prerequis systeme.
+    echo ERREUR lors de l'installation de ccdproc
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo Installation terminee avec succes.
+echo Installation terminee avec succes!
 echo ========================================
 echo.
-echo sora-astro est a jour dans astroenv. Relancez NPOAP depuis cet environnement.
+echo ccdproc est maintenant installe dans l'environnement astroenv.
+echo Vous pouvez relancer NPOAP pour utiliser le pre-processing complet.
 echo.
 pause
-exit /b 0

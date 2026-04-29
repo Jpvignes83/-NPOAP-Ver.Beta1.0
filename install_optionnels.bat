@@ -260,13 +260,25 @@ if errorlevel 1 (
     exit /b 0
 )
 
-python -m pip install --upgrade "setuptools<81" 1> "%TEMP%\npoap_setuptools_fix.log" 2>&1
+set "PYTHONNOUSERSITE=1"
+set "PIP_USER="
+set "PY_ASTRO=%CONDA_ROOT_OPT%\envs\astroenv\python.exe"
+if not exist "!PY_ASTRO!" (
+    echo [ECHEC] python.exe astroenv introuvable : !PY_ASTRO!
+    echo [ECHEC] python.exe astroenv introuvable : !PY_ASTRO!>> "%LOG_FILE%"
+    set /a FAIL_COUNT+=1
+    exit /b 0
+)
+echo [INFO] pip / Python : !PY_ASTRO! ^(pas de site-packages utilisateur Roaming^)
+echo [INFO] pip / Python : !PY_ASTRO! ^(conda uniquement^)>> "%LOG_FILE%"
+
+"!PY_ASTRO!" -m pip install --upgrade "setuptools<81" 1> "%TEMP%\npoap_setuptools_fix.log" 2>&1
 type "%TEMP%\npoap_setuptools_fix.log"
 echo.>> "%LOG_FILE%"
 echo ----- pip install --upgrade setuptools^<81 ----- >> "%LOG_FILE%"
 type "%TEMP%\npoap_setuptools_fix.log" >> "%LOG_FILE%"
 
-python -m pip install --prefer-binary -r "requirements_install_optionnels.txt" 1> "%TEMP%\npoap_pip_optionnels.log" 2>&1
+"!PY_ASTRO!" -m pip install --prefer-binary -r "requirements_install_optionnels.txt" 1> "%TEMP%\npoap_pip_optionnels.log" 2>&1
 set "RC_OPT=!errorlevel!"
 type "%TEMP%\npoap_pip_optionnels.log"
 echo.>> "%LOG_FILE%"
@@ -275,16 +287,16 @@ type "%TEMP%\npoap_pip_optionnels.log" >> "%LOG_FILE%"
 if "!RC_OPT!"=="0" (
     echo [OK] requirements_install_optionnels.txt installe
     echo [OK] requirements_install_optionnels.txt installe>> "%LOG_FILE%"
-    python -c "import stdpipe" 1>> "%TEMP%\npoap_stdpipe_check.log" 2>&1
+    "!PY_ASTRO!" -c "import stdpipe" 1>> "%TEMP%\npoap_stdpipe_check.log" 2>&1
     if errorlevel 1 (
         echo [WARN] stdpipe non importable apres pip - tentative: pip install --prefer-binary stdpipe
         echo [WARN] stdpipe non importable - relance pip install stdpipe>> "%LOG_FILE%"
-        python -m pip install --prefer-binary stdpipe 1>> "%TEMP%\npoap_pip_stdpipe_retry.log" 2>&1
+        "!PY_ASTRO!" -m pip install --prefer-binary stdpipe 1>> "%TEMP%\npoap_pip_stdpipe_retry.log" 2>&1
         type "%TEMP%\npoap_pip_stdpipe_retry.log"
         echo.>> "%LOG_FILE%"
         echo ----- pip install stdpipe ^(retry^) ----- >> "%LOG_FILE%"
         type "%TEMP%\npoap_pip_stdpipe_retry.log" >> "%LOG_FILE%"
-        python -c "import stdpipe; print('stdpipe OK')" 1>> "%TEMP%\npoap_stdpipe_check2.log" 2>&1
+        "!PY_ASTRO!" -c "import stdpipe; print('stdpipe OK')" 1>> "%TEMP%\npoap_stdpipe_check2.log" 2>&1
         if errorlevel 1 (
             echo [ECHEC] stdpipe toujours non importable - voir logs ci-dessus et docs STDPipe
             echo [ECHEC] stdpipe import impossible apres retry>> "%LOG_FILE%"
