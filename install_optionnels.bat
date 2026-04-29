@@ -51,7 +51,7 @@ if errorlevel 1 goto :end_sequence
 call :run_bat_step "Astrometry.net dans WSL" "install_astrometry_wsl.bat"
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
-call :run_bat_step "KBMOD sous WSL/Linux (aide/doc)" "install_kbmod_wsl.bat"
+call :run_bat_step "KBMOD sous WSL/Linux (installation auto)" "install_kbmod_wsl.bat"
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
@@ -59,10 +59,7 @@ call :install_gfortran_windows
 call :wait_next_step
 if errorlevel 1 goto :end_sequence
 
-REM Prospector : Windows uniquement ^(.ps1^) ; fallback WSL seulement si echec.
-call :run_prospector_windows
-call :wait_next_step
-if errorlevel 1 goto :end_sequence
+REM Prospector + FSPS : uniquement manuel ^(Installation_fsps\prospector.bat en WSL^), pas d'etape Windows dans cette sequence.
 
 REM SORA ^(sora-astro^) : installe / met a jour avec les autres paquets PyPI ^(requirements_install_optionnels.txt^).
 REM Mise a jour SORA seule : double-cliquez INSTALLER_SORA_ASTROENV.bat ou pip install -U sora-astro dans astroenv.
@@ -207,59 +204,6 @@ set /a MISS_COUNT+=1
 :gfortran_done
 exit /b 0
 
-:run_prospector_windows
-echo.
-echo ------------------------------------------------------------
-echo [OPTIONNEL] Prospector Windows (astroenv)
-echo ------------------------------------------------------------
-echo Le .ps1 installe Prospector avec --no-deps par defaut ^(evite le build fsps via pip^).
-echo FSPS compile : -InstallFSPS dans le .ps1 ^(gfortran + CMake^) ou WSL manuel ^(Installation_fsps\prospector.bat^).
-
-call :ask_install_or_skip "Prospector Windows (astroenv)"
-if errorlevel 1 (
-    echo [SKIP] Ignore par l'utilisateur: Prospector Windows
-    echo [SKIP] Ignore par l'utilisateur: Prospector Windows>> "%LOG_FILE%"
-    exit /b 0
-)
-
-echo [START] Prospector Windows>> "%LOG_FILE%"
-
-if exist "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1" (
-    call :run_prospector_ps1
-    if errorlevel 1 (
-        echo [ECHEC] Prospector Windows (.ps1^)
-        echo [ECHEC] Prospector Windows (.ps1^)>> "%LOG_FILE%"
-        set /a FAIL_COUNT+=1
-        call :offer_wsl_prospector_fallback
-    ) else (
-        echo [OK] Prospector Windows (.ps1^)
-        echo [OK] Prospector Windows (.ps1^)>> "%LOG_FILE%"
-    )
-    exit /b 0
-)
-if exist "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat" (
-    call "INSTALLER_PROSPECTOR_COMPLET_WINDOWS.bat"
-    set "RC=!errorlevel!"
-    if "!RC!"=="0" (
-        echo [OK] Prospector Windows (.bat^)
-        echo [OK] Prospector Windows (.bat^)>> "%LOG_FILE%"
-    ) else (
-        echo [ECHEC] Prospector Windows (.bat^) ^(code !RC!^)
-        echo [ECHEC] Prospector Windows (.bat^) ^(code !RC!^)>> "%LOG_FILE%"
-        set /a FAIL_COUNT+=1
-        call :offer_wsl_prospector_fallback
-    )
-    exit /b 0
-)
-echo [SKIP] INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1/.bat introuvable
-echo [SKIP] Prospector Windows introuvable>> "%LOG_FILE%"
-set /a MISS_COUNT+=1
-exit /b 0
-
-:run_prospector_ps1
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALLER_PROSPECTOR_COMPLET_WINDOWS.ps1"
-exit /b %ERRORLEVEL%
-
 :install_pip_optionnels
 echo.
 echo ------------------------------------------------------------
@@ -381,34 +325,18 @@ if "!AUTO_MODE!"=="1" (
 :ask_install_or_skip_loop
 set "ASK_CHOICE="
 set /p ASK_CHOICE="Installer l'etape '!ASK_LABEL!' ? (O/N): "
-if "!ASK_CHOICE!"=="" exit /b 0
+REM Supprimer espaces debut/fin (sinon " N " ou "non " etait refuse).
+for /f "tokens=*" %%a in ("!ASK_CHOICE!") do set "ASK_CHOICE=%%a"
+if not defined ASK_CHOICE (
+    echo Reponse vide : tapez O ou oui pour installer, N ou non pour ignorer ^(Entree seule ne fait rien^).
+    goto :ask_install_or_skip_loop
+)
 if /i "!ASK_CHOICE!"=="O" exit /b 0
+if /i "!ASK_CHOICE!"=="OUI" exit /b 0
+if /i "!ASK_CHOICE!"=="Y" exit /b 0
+if /i "!ASK_CHOICE!"=="YES" exit /b 0
 if /i "!ASK_CHOICE!"=="N" exit /b 1
-echo Reponse invalide. Tapez O pour installer ou N pour ignorer.
+if /i "!ASK_CHOICE!"=="NON" exit /b 1
+if /i "!ASK_CHOICE!"=="NO" exit /b 1
+echo Reponse invalide ^(!ASK_CHOICE!^). Tapez O / oui ou N / non.
 goto :ask_install_or_skip_loop
-
-:offer_wsl_prospector_fallback
-echo.
-set "TRY_WSL_PROSPECTOR="
-set /p TRY_WSL_PROSPECTOR="Echec Prospector Windows. Basculer maintenant vers Installation_fsps\prospector.bat ? (O/N): "
-if /i not "!TRY_WSL_PROSPECTOR!"=="O" exit /b 0
-
-if not exist "Installation_fsps\prospector.bat" (
-    echo [SKIP] Installation_fsps\prospector.bat introuvable
-    echo [SKIP] Installation_fsps\prospector.bat introuvable>> "%LOG_FILE%"
-    set /a MISS_COUNT+=1
-    exit /b 0
-)
-
-echo [START] Fallback Prospector WSL>> "%LOG_FILE%"
-call "Installation_fsps\prospector.bat"
-set "RC_FALLBACK=!errorlevel!"
-if "!RC_FALLBACK!"=="0" (
-    echo [OK] Fallback Prospector WSL termine
-    echo [OK] Fallback Prospector WSL termine>> "%LOG_FILE%"
-) else (
-    echo [ECHEC] Fallback Prospector WSL ^(code !RC_FALLBACK!^)
-    echo [ECHEC] Fallback Prospector WSL ^(code !RC_FALLBACK!^)>> "%LOG_FILE%"
-    set /a FAIL_COUNT+=1
-)
-exit /b 0
