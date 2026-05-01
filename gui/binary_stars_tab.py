@@ -61,9 +61,19 @@ try:
     import phoebe
     PHOEBE_AVAILABLE = True
     logger.debug(f"[PHOEBE] Import réussi (readline mock actif sur Windows si besoin)")
-except (ImportError, Exception) as e:
+except ImportError as e:
     PHOEBE_AVAILABLE = False
-    logger.warning(f"PHOEBE2 n'est pas installé ou erreur d'import: {e}. Utilisez: pip install phoebe", exc_info=True)
+    logger.warning(
+        "PHOEBE2 n'est pas installé : %s. Optionnel — pip install phoebe dans astroenv.",
+        e,
+    )
+except Exception as e:
+    PHOEBE_AVAILABLE = False
+    logger.warning(
+        "PHOEBE2 : erreur d'import inattendue : %s",
+        e,
+        exc_info=True,
+    )
 
 
 class BinaryStarsTab(ttk.Frame):
@@ -183,6 +193,21 @@ class BinaryStarsTab(ttk.Frame):
         ttk.Label(perio_params, text="Max P (j):").pack(side="left", padx=(0, 2))
         self.perio_max_p_var = tk.StringVar(value="10.0")
         ttk.Entry(perio_params, textvariable=self.perio_max_p_var, width=6).pack(side="left", padx=(0, 8))
+        self.perio_bls_detrend_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            perio_params,
+            text="Détrend poly (BLS)",
+            variable=self.perio_bls_detrend_var,
+        ).pack(side="left", padx=(4, 2))
+        ttk.Label(perio_params, text="°").pack(side="left")
+        self.perio_bls_deg_var = tk.StringVar(value="2")
+        ttk.Spinbox(
+            perio_params,
+            from_=1,
+            to=5,
+            width=3,
+            textvariable=self.perio_bls_deg_var,
+        ).pack(side="left", padx=(2, 0))
         perio_btns = ttk.Frame(perio_frame)
         perio_btns.pack(fill="x", pady=2)
         ttk.Button(perio_btns, text="Lomb-Scargle", command=lambda: self._run_periodogram("LS")).pack(side="left", padx=2)
@@ -480,10 +505,20 @@ class BinaryStarsTab(ttk.Frame):
             logger.warning("[Périodogramme] Paramètres invalides: %s", e)
             messagebox.showerror("Erreur", "Vérifiez Min P et Max P (nombres, Min < Max).")
             return
+        bls_detrend = bool(self.perio_bls_detrend_var.get())
+        try:
+            bls_deg = int(self.perio_bls_deg_var.get())
+        except (TypeError, ValueError):
+            bls_deg = 2
+        bls_deg = max(1, min(5, bls_deg))
         logger.debug("[Périodogramme] Lancement thread min_p=%s max_p=%s", min_p, max_p)
-        threading.Thread(target=self._worker_periodogram, args=(algo, min_p, max_p), daemon=True).start()
+        threading.Thread(
+            target=self._worker_periodogram,
+            args=(algo, min_p, max_p, bls_detrend, bls_deg),
+            daemon=True,
+        ).start()
     
-    def _worker_periodogram(self, algo, min_p, max_p):
+    def _worker_periodogram(self, algo, min_p, max_p, bls_detrend=False, bls_deg=2):
         """Exécute le calcul en arrière-plan et met à jour l'interface via after()."""
         res = None
         name = "Périodogramme"
@@ -494,8 +529,17 @@ class BinaryStarsTab(ttk.Frame):
                 res = run_lomb_scargle(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
                 name = "Lomb-Scargle"
             elif algo == "BLS":
-                res = run_bls(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
+                res = run_bls(
+                    self.lc_time,
+                    self.lc_flux,
+                    min_period=min_p,
+                    max_period=max_p,
+                    detrend=bls_detrend,
+                    detrend_degree=bls_deg,
+                )
                 name = "BLS (Transit)"
+                if bls_detrend:
+                    name = f"{name}, détrend °{bls_deg}"
             elif algo == "PLAV":
                 res = run_plavchan(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
                 name = "Plavchan"

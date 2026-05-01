@@ -243,6 +243,24 @@ class DataAnalysisTab:
         self.entry_max_p.insert(0, "10.0")
         self.entry_max_p.pack(side=tk.LEFT, padx=2)
 
+        bls_opt_fr = ttk.Frame(ctrl_frame)
+        bls_opt_fr.pack(side=tk.LEFT, padx=(8, 4))
+        self._bls_detrend_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            bls_opt_fr,
+            text="Détrend poly (BLS)",
+            variable=self._bls_detrend_var,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(bls_opt_fr, text="°").pack(side=tk.LEFT)
+        self._bls_detrend_deg_var = tk.StringVar(value="2")
+        ttk.Spinbox(
+            bls_opt_fr,
+            from_=1,
+            to=5,
+            width=3,
+            textvariable=self._bls_detrend_deg_var,
+        ).pack(side=tk.LEFT, padx=(2, 0))
+
         ttk.Separator(ctrl_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
         ttk.Label(ctrl_frame, text="Calcul :").pack(side=tk.LEFT)
@@ -425,6 +443,13 @@ class DataAnalysisTab:
             messagebox.showerror("Erreur", "Vérifiez les valeurs Min/Max Période.")
             return
 
+        bls_detrend = bool(self._bls_detrend_var.get())
+        try:
+            bls_deg = int(self._bls_detrend_deg_var.get())
+        except (TypeError, ValueError):
+            bls_deg = 2
+        bls_deg = max(1, min(5, bls_deg))
+
         # 1. SIGNAL DE TRAVAIL EN COURS (S'exécute AVANT que le thread ne bloque la GUI)
         self.main_frame.config(cursor="watch")
         self.sub_notebook.config(cursor="watch") 
@@ -432,12 +457,12 @@ class DataAnalysisTab:
 
         # 2. Lancement du calcul dans un thread
         thread = threading.Thread(
-            target=self._worker_run_period_algo, 
-            args=(algo, min_p, max_p)
+            target=self._worker_run_period_algo,
+            args=(algo, min_p, max_p, bls_detrend, bls_deg),
         )
         thread.start()
 
-    def _worker_run_period_algo(self, algo, min_p, max_p):
+    def _worker_run_period_algo(self, algo, min_p, max_p, bls_detrend=False, bls_deg=2):
         """Fonction de travail exécutée dans le thread."""
         res = None
         name = "Calcul Périodogramme"
@@ -446,8 +471,17 @@ class DataAnalysisTab:
                 res = run_lomb_scargle(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
                 name = "Lomb-Scargle (Standard Norm)"
             elif algo == "BLS":
-                res = run_bls(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
+                res = run_bls(
+                    self.lc_time,
+                    self.lc_flux,
+                    min_period=min_p,
+                    max_period=max_p,
+                    detrend=bls_detrend,
+                    detrend_degree=bls_deg,
+                )
                 name = "Box Least Squares (Transit)"
+                if bls_detrend:
+                    name = f"{name}, détrend poly °{bls_deg}"
             elif algo == "PLAV":
                 res = run_plavchan(self.lc_time, self.lc_flux, min_period=min_p, max_period=max_p)
                 name = "Plavchan (Binless PDM)"
