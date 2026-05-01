@@ -36,3 +36,8 @@ setuptools>=65,<81
 stdpipe
 scikit-learn
 celerite2
+
+# === ExoMiner (NASA, pipeline TCE) — mêmes imports que check_exominer_dependencies ===
+tensorflow>=2.13,<3
+lightkurve>=2.4
+pydl>=1.0
