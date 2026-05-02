@@ -170,9 +170,42 @@ def run_bls(
         warnings.simplefilter("ignore")
         results = bls.power(periods, durations)
 
-    power = np.asarray(results.power, dtype=float)
+    rp = results.power
+    if hasattr(rp, "value"):
+        power = np.asarray(rp.value, dtype=float)
+    else:
+        power = np.asarray(rp, dtype=float)
+
+    n_p, n_d = len(periods), len(durations)
+    # Astropy récent : power est 1D (max sur phase, profondeur et durée) ; anciennement 2D (P, D).
+    if power.ndim == 1 and power.shape[0] == n_p:
+        power_1d = np.nan_to_num(power, nan=0.0, posinf=0.0, neginf=0.0)
+        finite1 = np.isfinite(power)
+        if not np.any(finite1):
+            return periods, np.zeros_like(periods), 0.0
+        best_i = int(np.nanargmax(np.where(finite1, power, -np.inf)))
+        best_period = float(periods[best_i])
+        rd = results.duration
+        if hasattr(rd, "value"):
+            d_best = float(np.asarray(rd.value, dtype=float).flat[best_i])
+        else:
+            d_best = float(np.asarray(rd, dtype=float).flat[best_i])
+        best_dur_h = d_best * 24.0
+        logger.info(
+            "[Périodogramme] BLS terminé, meilleure période=%.6f j (~durée %.3f h, sortie 1D Astropy)",
+            best_period,
+            best_dur_h,
+        )
+        return periods, power_1d, best_period
+
     if power.ndim != 2:
-        power = power.reshape(len(periods), len(durations))
+        if power.size == n_p * n_d:
+            power = power.reshape(n_p, n_d)
+        else:
+            raise ValueError(
+                f"run_bls: forme power inattendue {power.shape} pour "
+                f"n_periods={n_p}, n_durations={n_d}"
+            )
 
     finite = np.isfinite(power)
     if not np.any(finite):
