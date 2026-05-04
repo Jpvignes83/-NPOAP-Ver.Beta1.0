@@ -28,12 +28,15 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.patches import Circle
 
+logger = logging.getLogger(__name__)
+
 # Import du wrapper STDPipe
 try:
     from core.stdpipe_wrapper import STDPipeWrapper, STDPIPE_AVAILABLE, STDPIPE_ERROR
-except ImportError:
+except Exception as e:
     STDPIPE_AVAILABLE = False
-    STDPIPE_ERROR = "Impossible d'importer le module stdpipe_wrapper"
+    STDPIPE_ERROR = f"Impossible d'importer le module stdpipe_wrapper: {type(e).__name__}: {e}"
+    logger.exception("Import de core.stdpipe_wrapper echoue")
 
 # Import du client Astro-COLIBRI (remplace TNS pour la recherche de transitoires)
 try:
@@ -44,8 +47,10 @@ except ImportError:
     AstroColibriClient = None
 
 from gui.manual_help import add_manual_help_header
+from gui.transient_sncosmo_dialog import TransientSncosmoPanel
 
-logger = logging.getLogger(__name__)
+import config
+from core.glade_alert_targets import transient_details_to_glade_export
 
 
 class TransientPhotometryTab(ttk.Frame):
@@ -89,25 +94,58 @@ class TransientPhotometryTab(ttk.Frame):
 
     def create_widgets(self):
         add_manual_help_header(self, "6-photométrie-transitoires")
-        # Layout principal (uniquement la partie STDPipe à gauche)
         container = ttk.Frame(self, padding=5)
         container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        sne_fr = ttk.LabelFrame(container, text="Courbes SN Ia (optionnel, sncosmo)", padding=8)
-        sne_fr.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(
-            sne_fr,
-            text="Ajustement SALT2 / SALT3 sur CSV (MJD, filtre Gaia G / G_Bp / G_Rp, mag, erreur). "
-            "Profil d’installation : requirements-cosmology-sne.txt",
-            wraplength=760,
-            justify=tk.LEFT,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-        ttk.Button(sne_fr, text="Ouvrir la boîte de dialogue…", command=self._open_sncosmo_dialog).pack(
-            side=tk.RIGHT
-        )
+        content_row = ttk.Frame(container)
+        content_row.pack(fill=tk.BOTH, expand=True)
+        content_row.columnconfigure(0, weight=1, uniform="transient_split")
+        content_row.columnconfigure(1, weight=1, uniform="transient_split")
+        content_row.rowconfigure(0, weight=1)
 
-        # Frame principal (workflow STDPipe existant)
-        left_frame = ttk.Frame(container, padding=5)
+        stdpipe_lf = ttk.LabelFrame(content_row, text="STDPipe — workflow image", padding=5)
+        stdpipe_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        sncosmo_lf = ttk.LabelFrame(content_row, text="Modélisation des SN Ia", padding=6)
+        sncosmo_lf.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        sncosmo_lf.columnconfigure(0, weight=1)
+        sncosmo_lf.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            sncosmo_lf,
+            text="Uniquement pour les supernovae de type Ia — pas pour les autres classes de transitoires.",
+            wraplength=360,
+            justify=tk.LEFT,
+            font=("Helvetica", 9, "italic"),
+            foreground="#444",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        sncosmo_canvas = tk.Canvas(sncosmo_lf, highlightthickness=0, borderwidth=0)
+        sncosmo_scroll = ttk.Scrollbar(sncosmo_lf, orient=tk.VERTICAL, command=sncosmo_canvas.yview)
+        sncosmo_canvas.configure(yscrollcommand=sncosmo_scroll.set)
+        sncosmo_scroll.grid(row=1, column=1, sticky="ns")
+        sncosmo_canvas.grid(row=1, column=0, sticky="nsew")
+
+        sncosmo_inner = ttk.Frame(sncosmo_canvas)
+        sncosmo_win = sncosmo_canvas.create_window((0, 0), window=sncosmo_inner, anchor=tk.NW)
+
+        def _sncosmo_scroll_cfg(_event=None):
+            sncosmo_canvas.configure(scrollregion=sncosmo_canvas.bbox("all"))
+
+        def _sncosmo_canvas_cfg(event):
+            w = max(1, int(event.width))
+            sncosmo_canvas.itemconfigure(sncosmo_win, width=w)
+
+        sncosmo_inner.bind("<Configure>", _sncosmo_scroll_cfg)
+        sncosmo_canvas.bind("<Configure>", _sncosmo_canvas_cfg)
+
+        TransientSncosmoPanel(
+            sncosmo_inner,
+            show_close_button=False,
+            csv_entry_width=28,
+        ).pack(fill=tk.BOTH, expand=True)
+
+        left_frame = ttk.Frame(stdpipe_lf, padding=5)
         left_frame.pack(fill=tk.BOTH, expand=True)
         
         # ========== PARTIE GAUCHE ==========
@@ -306,17 +344,6 @@ class TransientPhotometryTab(ttk.Frame):
         self.progress.grid(row=7, column=0, columnspan=3, pady=10, sticky="ew")
         
         # (Ancienne partie droite Astro-COLIBRI supprimée de l'interface)
-
-    def _open_sncosmo_dialog(self):
-        """Ajustement SN Ia (SALT2/SALT3) via sncosmo — dépendance optionnelle."""
-        try:
-            from gui.transient_sncosmo_dialog import open_transient_sncosmo_dialog
-
-            top = self.winfo_toplevel()
-            open_transient_sncosmo_dialog(top)
-        except Exception as e:
-            logger.exception("Ouverture dialogue sncosmo")
-            messagebox.showerror("sncosmo", f"Impossible d'ouvrir l'outil SN Ia :\n{e}", parent=self.winfo_toplevel())
 
     def browse_science_fits(self):
         initial_dir = self.base_dir
@@ -988,20 +1015,9 @@ class TransientPhotometryTab(ttk.Frame):
         """Sauvegarde l'UID Astro-COLIBRI dans config.py (persistant au redémarrage)."""
         try:
             import config
-            import re
+
             uid = self.colibri_uid_var.get().strip()
-            config_path = Path(__file__).parent.parent / "config.py"
-            with open(config_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            # Remplacer la ligne ASTRO_COLIBRI_UID = "..."
-            pattern = r"^(ASTRO_COLIBRI_UID\s*=\s*).*$"
-            replacement = r"\g<1>" + repr(uid)
-            new_content = re.sub(pattern, replacement, content, count=1, flags=re.MULTILINE)
-            if new_content == content:
-                logger.warning("Ligne ASTRO_COLIBRI_UID non trouvée dans config.py")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            config.ASTRO_COLIBRI_UID = uid
+            config.persist_astro_colibri_uid(uid)
             messagebox.showinfo("Succès", "UID Astro-COLIBRI sauvegardé dans config.py (rappelé à l'ouverture)")
         except Exception as e:
             logger.error("Erreur sauvegarde config Astro-COLIBRI: %s", e)
@@ -1262,3 +1278,48 @@ class TransientPhotometryTab(ttk.Frame):
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", "\n".join(lines))
         text_widget.config(state="disabled")
+
+        btn_row = ttk.Frame(win)
+        btn_row.pack(fill=tk.X, pady=(8, 0))
+
+        ttk.Button(btn_row, text="Fermer", command=win.destroy).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_row,
+            text="🎯 Top 10 GLADE+ → NINA (JSON)",
+            command=lambda: self._export_glade_nina_from_transient_details(details),
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+    def _export_glade_nina_from_transient_details(self, details: dict):
+        """Top 10 galaxies GLADE+ classées par vraisemblance d’alerte ; un JSON NINA par cible."""
+        try:
+            float(details.get("ra"))
+            float(details.get("dec"))
+        except (TypeError, ValueError):
+            messagebox.showwarning(
+                "GLADE+ / NINA",
+                "Les coordonnées RA/Dec ne sont pas disponibles pour cet événement.",
+            )
+            return
+
+        dest = filedialog.askdirectory(
+            title="Dossier de sortie pour les JSON NINA (GLADE+)",
+        )
+        if not dest:
+            return
+        try:
+            targets, paths = transient_details_to_glade_export(details, Path(dest))
+            if not paths:
+                messagebox.showwarning(
+                    "GLADE+",
+                    "Aucune galaxie candidate. Vérifiez Gladeplus.h5 sous %USERPROFILE%\\.npoap\\catalogues\\.",
+                )
+                return
+            messagebox.showinfo(
+                "NINA",
+                "%d fichier(s) créé(s) :\n\n%s" % (len(paths), "\n".join(str(p) for p in paths)),
+            )
+        except FileNotFoundError as e:
+            messagebox.showerror("GLADE+", str(e))
+        except Exception as e:
+            logger.exception("Export GLADE NINA (transitoires)")
+            messagebox.showerror("Erreur", str(e))

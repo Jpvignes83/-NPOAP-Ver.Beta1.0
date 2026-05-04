@@ -34,6 +34,7 @@ from threading import Thread
 
 import config
 from config import OBSERVATORY
+from core.glade_alert_targets import transient_details_to_glade_export
 from astropy.coordinates import EarthLocation
 from astropy import units as u
 from astropy.time import Time
@@ -848,10 +849,6 @@ class NightObservationTab(ttk.Frame):
         self.last_exoplanet_provider_counts = {}
         self.etd_authenticated = False
 
-        # Callback optionnel vers l'onglet Planétarium (C2A)
-        # Renseigné par MainWindow via set_c2a_visualizer.
-        self.c2a_visualizer = None
-        
         # Variables Tkinter
         self.date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         self.date_end_var = tk.StringVar(value="")
@@ -859,9 +856,9 @@ class NightObservationTab(ttk.Frame):
         
         # Cases à cocher types d'objets
         self.asteroids_var = tk.BooleanVar(value=False)
-        self.exoplanets_var = tk.BooleanVar(value=True)
+        self.exoplanets_var = tk.BooleanVar(value=False)
         self.comets_var = tk.BooleanVar(value=False)
-        self.eclipsing_binaries_var = tk.BooleanVar(value=True)
+        self.eclipsing_binaries_var = tk.BooleanVar(value=False)
         
         # Coordonnées manuelles ICRS (sexagésimal) pour le graphique d'altitude
         self.manual_ra_h_var = tk.StringVar(value="")
@@ -1026,6 +1023,9 @@ class NightObservationTab(ttk.Frame):
         uid_row.pack(fill=tk.X, pady=2)
         ttk.Label(uid_row, text="UID Astro-COLIBRI:").pack(side=tk.LEFT, padx=(0, 4))
         ttk.Entry(uid_row, textvariable=self.colibri_uid_var, width=26).pack(side=tk.LEFT, padx=2)
+        ttk.Button(uid_row, text="💾 Enregistrer dans config", command=self.save_colibri_uid_to_config).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
 
         dates_row = ttk.Frame(colibri_frame)
         dates_row.pack(fill=tk.X, pady=2)
@@ -1062,11 +1062,6 @@ class NightObservationTab(ttk.Frame):
             buttons_row,
             text="Réinitialiser",
             command=self.reset_observable_objects_view,
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Button(
-            buttons_row,
-            text="🪐 Envoyer vers l'onglet Planétarium (C2A)",
-            command=self.on_visualize_in_c2a,
         ).pack(side=tk.LEFT, padx=5)
         
         # ===== LISTE DES OBJETS =====
@@ -1209,8 +1204,24 @@ class NightObservationTab(ttk.Frame):
                 return obj
         return None
 
+    def _colibri_details_dict_for_transient_obj(self, obj: "EphemerisObject") -> dict:
+        """Fusionne le voevent Astro-COLIBRI (si présent) avec RA/Dec courants pour export GLADE/NINA."""
+        d: dict = {}
+        raw = getattr(obj, "colibri_raw_event", None)
+        if isinstance(raw, dict):
+            d.update(raw)
+        d["ra"] = obj.ra
+        d["dec"] = obj.dec
+        if not d.get("source_name"):
+            d["source_name"] = obj.name
+        return d
+
     def _show_object_details_window(self, obj: "EphemerisObject") -> None:
-        """Ouvre une petite fenêtre de détails pour l'objet sélectionné."""
+        """Ouvre une fenêtre de détails ; pour les transitoires Astro-COLIBRI : format + export NINA/GLADE."""
+        if getattr(obj, "obj_type", "") == "transient":
+            self._show_transient_astro_colibri_details_window(obj)
+            return
+
         win = tk.Toplevel(self)
         win.title(f"Détails objet : {obj.name}")
         win.geometry("420x220")
@@ -1248,22 +1259,102 @@ class NightObservationTab(ttk.Frame):
         btn_row.pack(fill=tk.X, pady=5)
 
         ttk.Button(btn_row, text="Fermer", command=win.destroy).pack(side=tk.LEFT)
+
+    def _show_transient_astro_colibri_details_window(self, obj: "EphemerisObject") -> None:
+        """Fenêtre type onglet transitoires : détails + export NINA (top 10 GLADE+)."""
+        details = self._colibri_details_dict_for_transient_obj(obj)
+        name = details.get("source_name") or details.get("trigger_id") or obj.name or "Transient"
+        win = tk.Toplevel(self)
+        win.title("Détails Astro-COLIBRI: %s" % name)
+        win.geometry("480x300")
+
+        text_frame = ttk.Frame(win, padding=10)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        identification = (
+            details.get("astro_colibri_id")
+            or details.get("identifier")
+            or details.get("source_name")
+            or details.get("trigger_id")
+            or "—"
+        )
+        classification = details.get("classification") or "—"
+        lines = [
+            "Identification: %s" % identification,
+            "Classification: %s" % classification,
+            "RA (hh:mm:ss): %s" % obj.ra_sexagesimal(),
+            "Dec (dd:mm:ss): %s" % obj.dec_sexagesimal(),
+            "Mag (liste nuit): %s"
+            % (
+                f"{obj.magnitude:.2f}"
+                if obj.magnitude is not None
+                else "N/A"
+            ),
+            (
+                "Alt. max: %.1f°" % obj.alt_max
+                if hasattr(obj, "alt_max")
+                else "Alt. max: N/A"
+            ),
+        ]
+        if details.get("time"):
+            lines.append("Time (voevent): %s" % details.get("time"))
+        if details.get("trigger_id"):
+            lines.append("trigger_id: %s" % details.get("trigger_id"))
+
+        text_widget = tk.Text(text_frame, height=11, wrap=tk.WORD, font=("Consolas", 10))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert("1.0", "\n".join(lines))
+        text_widget.config(state="disabled")
+
+        btn_row = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btn_row.pack(fill=tk.X)
+
+        ttk.Button(btn_row, text="Fermer", command=win.destroy).pack(side=tk.LEFT)
         ttk.Button(
             btn_row,
-            text="🪐 Visualiser cette cible dans C2A",
-            command=lambda: self._visualize_single_object_in_c2a(obj),
-        ).pack(side=tk.LEFT, padx=8)
+            text="🎯 Top 10 GLADE+ → NINA (JSON)",
+            command=lambda: self._export_glade_nina_from_night_details(details),
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
-    # ------------------------------------------------------------------
-    # Intégration C2A
-    # ------------------------------------------------------------------
-    def set_c2a_visualizer(self, callback) -> None:
-        """
-        Enregistre une fonction pour pousser une liste d’objets vers l’onglet Planétarium.
+    def _export_glade_nina_from_night_details(self, details: dict) -> None:
+        """Enregistre jusqu'à 10 JSON NINA (cibles Galade+) depuis une alerte Astro-COLIBRI."""
+        try:
+            float(details.get("ra"))
+            float(details.get("dec"))
+        except (TypeError, ValueError):
+            messagebox.showwarning(
+                "GLADE+ / NINA",
+                "Les coordonnées RA/Dec ne sont pas disponibles.",
+                parent=self.winfo_toplevel(),
+            )
+            return
 
-        callback(objs: List[EphemerisObject]) -> None
-        """
-        self.c2a_visualizer = callback
+        dest = filedialog.askdirectory(
+            title="Dossier de sortie pour les JSON NINA (GLADE+)",
+            parent=self.winfo_toplevel(),
+        )
+        if not dest:
+            return
+        try:
+            targets, paths = transient_details_to_glade_export(details, Path(dest))
+            if not paths:
+                messagebox.showwarning(
+                    "GLADE+",
+                    "Aucune galaxie candidate dans le cône (vérifiez Gladeplus.h5 sous "
+                    "%USERPROFILE%\\.npoap\\catalogues).",
+                    parent=self.winfo_toplevel(),
+                )
+                return
+            msg = "%d fichier(s) NINA créé(s) :\n\n%s" % (
+                len(paths),
+                "\n".join(str(p) for p in paths),
+            )
+            messagebox.showinfo("NINA", msg, parent=self.winfo_toplevel())
+        except FileNotFoundError as e:
+            messagebox.showerror("GLADE+", str(e), parent=self.winfo_toplevel())
+        except Exception as e:
+            logger.exception("Export GLADE NINA (nuit)")
+            messagebox.showerror("Erreur", str(e), parent=self.winfo_toplevel())
 
     def _get_selected_objects(self) -> List["EphemerisObject"]:
         """
@@ -1357,41 +1448,6 @@ class NightObservationTab(ttk.Frame):
 
         return bodies, time_beg, time_end, lon_deg, lat_deg, height_m, site_name
 
-    def on_visualize_in_c2a(self) -> None:
-        """
-        Handler du bouton 'Envoyer vers l'onglet Planétarium (C2A)'.
-        """
-        if self.c2a_visualizer is None:
-            messagebox.showwarning(
-                "C2A",
-                "Le lien vers l'onglet Planétarium (C2A) n'est pas initialisé.",
-            )
-            return
-
-        objs = self._get_selected_objects()
-        if not objs:
-            messagebox.showinfo(
-                "C2A",
-                "Aucune cible n'est sélectionnée dans la liste des objets observables.\n"
-                "Cochez au moins un objet dans la colonne ☑ puis réessayez.",
-            )
-            return
-
-        self.c2a_visualizer(objs)
-
-    def _visualize_single_object_in_c2a(self, obj: "EphemerisObject") -> None:
-        """
-        Appelé depuis la fenêtre de détails pour envoyer directement cet objet
-        dans la liste de l’onglet Planétarium.
-        """
-        if self.c2a_visualizer is None:
-            messagebox.showwarning(
-                "C2A",
-                "Le lien vers l'onglet Planétarium (C2A) n'est pas initialisé.",
-            )
-            return
-        self.c2a_visualizer([obj])
-    
     def toggle_date_interval(self):
         """Active/désactive le champ de date de fin pour l'intervalle."""
         if self.use_interval_var.get():
@@ -1404,6 +1460,20 @@ class NightObservationTab(ttk.Frame):
         else:
             self.date_end_entry.config(state='disabled')
             self.date_end_var.set("")
+
+    def save_colibri_uid_to_config(self):
+        """Enregistre l’UID saisi dans config.py pour le réutiliser par défaut au prochain lancement."""
+        try:
+            uid = self.colibri_uid_var.get().strip()
+            config.persist_astro_colibri_uid(uid)
+            messagebox.showinfo(
+                "Succès",
+                "UID Astro-COLIBRI enregistré dans config.py.\n"
+                "Il sera prérempli dans cet onglet et disponible pour les autres modules.",
+            )
+        except Exception as e:
+            logger.error("Erreur sauvegarde Astro-COLIBRI : %s", e, exc_info=True)
+            messagebox.showerror("Erreur", "Impossible d'enregistrer :\n%s" % e)
 
     def search_colibri_for_observables(self):
         """Recherche des transitoires Astro-COLIBRI par plage de dates et les projette dans « Objets observables »."""
@@ -1512,6 +1582,9 @@ class NightObservationTab(ttk.Frame):
                     magnitude=mag,
                     obj_type="transient",
                 )
+                # Conserver la ligne voevent Astro-COLIBRI pour détails / export GLADE–NINA
+                if isinstance(evt, dict):
+                    obj.colibri_raw_event = dict(evt)
 
                 # Calculer les éphémérides pour ce transitoire (alt_max, transit, etc.)
                 try:
