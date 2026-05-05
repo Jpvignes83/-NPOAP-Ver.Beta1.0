@@ -107,7 +107,7 @@ class DataAnalysisTab:
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         add_manual_help_header(self.main_frame, "7-analyse-de-données")
 
-        # Sous-onglets A–F (MAST / catalogues exoplanètes puis outils d'analyse + ExoMiner)
+        # Sous-onglets A–E (MAST / catalogues exoplanètes puis outils d'analyse)
         self.sub_notebook = ttk.Notebook(self.main_frame)
         self.sub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -116,14 +116,12 @@ class DataAnalysisTab:
         self.tab_ttv = ttk.Frame(self.sub_notebook)
         self.tab_multi = ttk.Frame(self.sub_notebook)
         self.tab_nbody = ttk.Frame(self.sub_notebook)
-        self.tab_exominer = ttk.Frame(self.sub_notebook)
 
         self.sub_notebook.add(self.tab_catalogues_mast, text="A. Catalogues MAST")
         self.sub_notebook.add(self.tab_period, text="B. Détermination Période")
         self.sub_notebook.add(self.tab_ttv, text="C. Recherche & Analyse TTV")
         self.sub_notebook.add(self.tab_multi, text="D. Analyse Système Multiple")
         self.sub_notebook.add(self.tab_nbody, text="E. Simulation N-body")
-        self.sub_notebook.add(self.tab_exominer, text="F. Exominer — validation de TCE")
 
         # Même interface que l'onglet Catalogues → Exoplanètes (MAST, Édition Fits, LcTools)
         try:
@@ -168,7 +166,6 @@ class DataAnalysisTab:
         self.setup_part_b()
         self.setup_part_c()
         self.setup_part_d()
-        self.setup_part_exominer()
 
     # =========================================================================
     # PARTIE A : DÉTERMINATION PÉRIODE & EXTRACTION MID-TIME
@@ -1151,8 +1148,9 @@ INTERPRÉTATION : {interpretation}
 4. VÉRIFICATION PHYSIQUE ('The Exoplanet Edge' - Yahalomi et al.)
 -------------------------------------------------------------------
 Période Orbitale Planète : {p_orb_jours:.4f} jours
-Période Modulation TTV   : {p_ttv_jours_moy:.4f} jours ({ratio_p_ttv_p_orb:.4f} x P_orb)
-Ratio (P_ttv / P_orb)    : {ratio_p_ttv_p_orb:.4f}
+P_ttv (en époques)       : {p_ttv_epoch_moy:.4f} +/- {p_ttv_epoch_err:.4f}
+Période Modulation TTV   : {p_ttv_jours_moy:.4f} +/- {p_ttv_jours_err:.4f} jours
+Ratio (P_ttv / P_orb)    : {ratio_p_ttv_p_orb:.4f} (sans unité)
 Limite Théorique         : > 0.5
 
 [OK] COMPATIBLE AVEC UNE PERTURBATION PLANÉTAIRE
@@ -1489,22 +1487,6 @@ Note : Cherchez des transits ou des signaux TTV croisés à ces périodes.
         main_paned.add(right_frame, weight=2)
         self.setup_nbody_visualization(right_frame)
 
-    def setup_part_exominer(self):
-        """Onglet F — pont vers le pipeline NASA ExoMiner (hors Podman)."""
-        try:
-            from gui.exominer_panel import ExominerPanel
-
-            ExominerPanel(self.tab_exominer).pack(fill=tk.BOTH, expand=True)
-        except Exception as e:
-            logger.exception("Échec chargement panneau ExoMiner")
-            ttk.Label(
-                self.tab_exominer,
-                text=f"ExoMiner — impossible de charger le panneau :\n{e}",
-                foreground="red",
-                wraplength=560,
-                justify="left",
-            ).pack(padx=12, pady=12, anchor="w")
-    
     def setup_nbody_controls(self, parent):
         """Crée l'interface de contrôle pour la simulation N-body."""
         # Instructions
